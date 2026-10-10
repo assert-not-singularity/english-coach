@@ -1,10 +1,1 @@
-{
-  "hooks": {
-    "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/english-coach.py\"", "timeout": 5 } ] }
-    ],
-    "Stop": [
-      { "hooks": [ { "type": "command", "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/english-coach.py\" stop", "timeout": 35 } ] }
-    ]
-  }
-}
+{"modules": ["./register.tsx"]}

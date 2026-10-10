@@ -1,0 +1,150 @@
+[
+  {
+    "id": "transfer-basic",
+    "text": "Can you explain me why the build is failing, because I am since two hours trying to fix it?",
+    "flag": [
+      "explain me",
+      "I am since"
+    ]
+  },
+  {
+    "id": "uncountable-plural",
+    "text": "Please check the informations in the config file, they are not clear to me.",
+    "flag": [
+      "informations"
+    ]
+  },
+  {
+    "id": "false-friend",
+    "text": "I will become a new keyboard tomorrow, so the typing tests should run faster.",
+    "flag": [
+      "become"
+    ]
+  },
+  {
+    "id": "deliberate-flaws-not-careless",
+    "text": "I try an really flaw sentence now, just for fun. Pls ignore it.",
+    "careless": false,
+    "flag": [
+      "an really"
+    ]
+  },
+  {
+    "id": "minimal-fix-keeps-dropped-subject",
+    "text": "Ah, lol. It makes sense. Makes absolutely sense.",
+    "fix_lacks": [
+      "that makes",
+      "it makes"
+    ]
+  },
+  {
+    "id": "terse-but-correct",
+    "text": "Looks good to me. Makes sense. Will check later and report back.",
+    "no_findings": true
+  },
+  {
+    "id": "statement-question",
+    "text": "The repo you mentioned also had some visual statistics...?",
+    "no_findings": true
+  },
+  {
+    "id": "fragment-question",
+    "text": "Maybe running the full suite nightly instead of on every push?",
+    "no_findings": true,
+    "informational": true
+  },
+  {
+    "id": "politeness-is-taste",
+    "text": "I'm wondering if you can also summarize the open issues in the tracker.",
+    "no_findings": true
+  },
+  {
+    "id": "jargon-and-code",
+    "text": "Run `uv sync` and check why the PostgreSQL migration job hangs on the staging cluster.",
+    "no_findings": true
+  },
+  {
+    "id": "quoted-text-ignored",
+    "text": "The log says \"cannot found module\" right after startup, can you look into it?",
+    "no_findings": true
+  },
+  {
+    "id": "clean-polite-request",
+    "text": "Could you review the diff and tell me whether the retry logic handles timeouts correctly?",
+    "no_findings": true
+  },
+  {
+    "id": "sloppy-lowercase",
+    "text": "ugh just fix the damn thing no idea why it dosnt work, tests fail agian whatever, make it run",
+    "careless": true
+  },
+  {
+    "id": "sloppy-chat",
+    "text": "ok so this thing dont work again the build failt after i changed config wtf fix it quick",
+    "careless": true
+  },
+  {
+    "id": "blockquote-is-not-mine",
+    "text": "Here is what the tool printed:\n> The build have failed because of missing informations.\nCan you tell me why it printed that?",
+    "no_findings": true
+  },
+  {
+    "id": "pasted-previous-tip",
+    "text": "I think that tip was wrong: it said 'explain me' → 'explain to me', but I meant something else, can you check that?",
+    "seed": [
+      [
+        "explain me",
+        "explain to me"
+      ]
+    ],
+    "no_findings": true
+  },
+  {
+    "id": "recall-adverb-for-adjective",
+    "text": "Ah, lol. It makes sense. Makes absolutely sense.",
+    "flag": [
+      "absolutely sense"
+    ],
+    "informational": true
+  },
+  {
+    "id": "real-word-typo",
+    "text": "I usually read the changelog first, but now always, and then I regret it later.",
+    "no_findings": true
+  },
+  {
+    "id": "speech-homophones",
+    "text": "I think there going to merge the branch tomorrow, so we should hold the release until then. [dictated]",
+    "no_findings": true
+  },
+  {
+    "id": "speech-misheard-word",
+    "text": "Can you check weather the tests are passing on the main branch before we deploy? [dictated]",
+    "no_findings": true
+  },
+  {
+    "id": "speech-fillers-no-punctuation",
+    "text": "so um I was thinking that we could like try the new parser and then see if it is faster you know [dictated]",
+    "no_findings": true,
+    "careless": false
+  },
+  {
+    "id": "speech-lowercase-not-careless",
+    "text": "can you look at the failing job and tell me what changed since yesterday [dictated]",
+    "no_findings": true,
+    "careless": false
+  },
+  {
+    "id": "speech-real-grammar-still-flagged",
+    "text": "Can you explain me why the build is failing, because I am since two hours trying to fix it? [dictated]",
+    "flag": [
+      "explain me",
+      "I am since"
+    ]
+  },
+  {
+    "id": "speech-marker-mid-text",
+    "text": "Can you check weather [dictated] the tests are passing on the main branch? [dictated] I mean no [dictated] now [dictated]",
+    "no_findings": true
+  }
+]

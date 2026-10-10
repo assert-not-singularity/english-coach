@@ -1,8 +1,17 @@
 {
   "name": "english-coach",
-  "version": "0.1.0",
-  "description": "Quiet English feedback on every prompt you type: a small model reviews it in the background, tips appear after the reply, and recurring weaknesses are tracked locally. Careless messages are detected and ignored.",
-  "author": { "name": "Niklas Puller" },
+  "version": "0.2.0",
+  "description": "Quiet English feedback on every prompt you type: a small model reviews it in the background and the fixes appear directly under your message. Recurring weaknesses are tracked locally; careless messages are detected and ignored.",
+  "author": {
+    "name": "Niklas Puller"
+  },
   "repository": "https://github.com/assert-not-singularity/english-coach",
-  "keywords": ["english", "writing", "coach", "grammar", "hooks"]
+  "keywords": [
+    "english",
+    "writing",
+    "coach",
+    "grammar",
+    "hooks"
+  ],
+  "types": "./types/index.d.ts"
 }
