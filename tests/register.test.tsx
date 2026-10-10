@@ -148,4 +148,24 @@ describe('inline fixes', () => {
     expect(seen.entered).toBe(PROMPT)
     expect(seen.ingestMode).toBe('written')
   })
+
+  test('fixes in dictated text carry a microphone, in typed text a pen', async ($, on) => {
+    const spoken = world(on, INGESTED)
+    await submit($, PROMPT + MARKER)
+    const dictated = await drawnWith($, spoken.clock, PROMPT, /explain to me/)
+    expect(dictated).toBeDefined()
+    expect(await dictated!.find({ text: /🎤/ })).toBeDefined()
+    expect(await dictated!.find({ text: /✎/ })).toBeUndefined()
+    await dictated!.unmount()
+  })
+
+  test('fixes in typed text carry a pen', async ($, on) => {
+    const typed = world(on, INGESTED)
+    await submit($, PROMPT)
+    const written = await drawnWith($, typed.clock, PROMPT, /explain to me/)
+    expect(written).toBeDefined()
+    expect(await written!.find({ text: /✎/ })).toBeDefined()
+    expect(await written!.find({ text: /🎤/ })).toBeUndefined()
+    await written!.unmount()
+  })
 })

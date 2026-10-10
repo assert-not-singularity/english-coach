@@ -60,7 +60,7 @@ const review = async ($: EngineInterface, prepared: Prepared, shown: string) => 
     if (result.hint) $.ui.toast(result.hint)
     if (result.careless || (result.fixes.length === 0 && !result.btw)) return
 
-    const entry: Review = { fixes: result.fixes as Fix[], btw: result.btw ?? null }
+    const entry: Review = { fixes: result.fixes as Fix[], btw: result.btw ?? null, mode: prepared.mode }
     await update($, reviews, held => Object.fromEntries(Object.entries({ ...held, [textKey(shown)]: entry }).slice(-KEEP)))
   } catch (error) {
     $.ui.toast(`english-coach: review failed (${String(error).slice(0, 80)})`)
@@ -98,6 +98,7 @@ export const register: Register = on => {
     if (held === undefined) return drawn
 
     const { Box, Text } = $.ui.resolve(e)
+    const mark = held.mode === 'dictated' ? '🎤 ' : '✎ ' // a microphone for fixes in dictated text
 
     return (
       <Box flexDirection="column">
@@ -106,7 +107,7 @@ export const register: Register = on => {
           {held.fixes.map((fix, index) => (
             <Box key={`fix-${index}`} flexDirection="column">
               <Text wrap="wrap">
-                <Text dimColor>{'✎ '}</Text>
+                <Text dimColor>{mark}</Text>
                 <Text color="error">{fix.original}</Text>
                 <Text dimColor>{' → '}</Text>
                 <Text color="success" bold>

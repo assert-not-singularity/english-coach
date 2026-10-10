@@ -525,7 +525,7 @@ def config_cmd(args):
         print(f"Saved {key} = {cfg[key]!r} in {CONFIG_FILE}")
         return
     for k in DEFAULTS:
-        shown = cfg[k] if cfg[k] is not None else "(not set: no language-specific feedback)"
+        shown = cfg[k] if cfg[k] is not None else ("(not set: no language-specific feedback)" if k == "native_language" else "(not set)")
         print(f"{k}: {shown}")
     print(f"\nChange with: english-coach.py config set <key> <value>   ({CONFIG_FILE})")
 

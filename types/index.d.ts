@@ -9,6 +9,7 @@ export type Fix = {
 export type Review = {
   fixes: Fix[]
   btw: string | null
+  mode: 'written' | 'dictated'
 }
 
 declare module 'claude-code' {
