@@ -212,7 +212,7 @@ export const register: Register = on => {
               ) : null}
             </Box>
           ))}
-          {held.phrase === null ? null : (
+          {!held.phrase ? null : (
             <Box flexDirection="column">
               <Text wrap="wrap">
                 <Text color="suggestion">{'✦ '}</Text>

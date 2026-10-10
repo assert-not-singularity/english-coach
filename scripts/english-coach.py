@@ -444,6 +444,8 @@ def validate(answer, prompt, recent=(frozenset(), frozenset()), speech=False, co
             continue                                            # only adds words around terse phrasing: not an error
         spans.append((a, b))
         cat = f.get("category") if f.get("category") in CATEGORIES else "other"
+        if cat == "word-order" and sorted(_words(orig)) != sorted(_words(fix)):   # word order moves the same words; a fix that adds or drops one is something else
+            cat = "phrasing"
         severity = "style" if f.get("severity") == "style" else "error"
         fixes.append((cat, int(bool(f.get("transfer"))), orig, fix, clean(f.get("explanation"), 300), severity))
     errors = [x for x in fixes if x[5] == "error"]
@@ -869,6 +871,19 @@ def core_change(original, fix):
     return {"wrong": original[:60], "right": fix[:60]}
 
 
+def context_change(original, fix, context=2):
+    """The changed stretch of a correction with `context` words on each side, for lists where a lone word pair ("take" -> "use")
+    would say nothing."""
+    a, b = original.split(), fix.split()
+    norm = lambda t: re.sub(r"[^\w']+", "", t.lower())
+    ops = [o for o in difflib.SequenceMatcher(None, [norm(t) for t in a], [norm(t) for t in b], autojunk=False).get_opcodes() if o[0] != "equal"]
+    if not ops:
+        return {"wrong": original, "right": fix}
+    i1, i2, j1, j2 = ops[0][1], ops[-1][2], ops[0][3], ops[-1][4]
+    lead, tail = min(context, i1, j1), min(context, len(a) - i2, len(b) - j2)
+    return {"wrong": " ".join(a[i1 - lead:i2 + tail]), "right": " ".join(b[j1 - lead:j2 + tail])}
+
+
 def summary_due_cmd(args=()):
     """Which modes should get a fresh written summary now, for the mod's checks: stdout {"modes": [...]}. A mode is due when it has at
     least 10 errors, no summary yet or `summary_every` new errors since the last one, and no attempt in the last 6 hours (10 minutes when
@@ -1007,7 +1022,7 @@ def overview_data(mode="both"):
                            "summary": summary, "summary_stale": bool(row and row[1] != total)})
 
     def listing(severity, limit=3):
-        return [{"original": o, "fix": f, "explanation": e, "core": core_change(o, f)} for o, f, e in c.execute(
+        return [{"original": o, "fix": f, "explanation": e, "core": context_change(o, f)} for o, f, e in c.execute(
             f"SELECT original, fix, explanation FROM findings WHERE mode IN ({marks}) AND severity=? AND dismissed=0 ORDER BY id DESC LIMIT ?",
             (*modes, severity, limit))]
 

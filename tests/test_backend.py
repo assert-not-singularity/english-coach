@@ -258,7 +258,7 @@ class Watchlist(Workspace):
         self.assertIn('"defer" instead of "derive"', prepared["system"])
         self.assertIn("Removed 1 entry", self.cli("watch", "remove", "defer"))
         prepared = json.loads(self.cli("prepare", stdin=json.dumps({"prompt": "Can you explain how this score is calculated, please?"})))
-        self.assertNotIn("instead of", prepared["system"])
+        self.assertNotIn('"defer" instead of', prepared["system"])   # (a phrase meaning in the offered list may say "instead of")
 
     def test_report_lists_the_watchlist(self):
         self.say("Can we defer this score from the text, please?", "defer this score", "derive this score")
@@ -784,3 +784,29 @@ class DiffParts(Workspace):
     def test_ingest_carries_the_parts(self):
         out = self.ingest("Can you explain me why the build is failing, please?", [self.fix("explain me", "explain to me")])
         self.assertEqual([t for t, c in out["fixes"][0]["parts"]["fix"] if c], ["to"])
+
+
+class ContextChange(Workspace):
+    def test_a_lone_word_swap_keeps_two_words_of_context(self):
+        c = self.ec.context_change("we should take the latest version here", "we should use the latest version here")
+        self.assertEqual(c, {"wrong": "we should take the latest", "right": "we should use the latest"})
+
+    def test_short_fragments_stay_whole_and_edges_are_respected(self):
+        self.assertEqual(self.ec.context_change("take it", "use it"), {"wrong": "take it", "right": "use it"})
+
+    def test_polish_and_slip_lists_carry_the_context(self):
+        self.ingest("Honestly we should take the latest version here, I think.", [self.fix("take the latest version", "use the latest version", severity="style")])
+        data = json.loads(self.cli("overview", "written"))
+        self.assertIn("the latest", data["style_examples"][0]["core"]["wrong"])
+
+
+class WordOrderLabel(Workspace):
+    def test_a_fix_that_changes_the_words_is_not_word_order(self):
+        self.ingest("I am not sure if especially the second example fits here.", [self.fix("if especially the", "if the", category="word-order")])
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            self.assertEqual(c.execute("SELECT category FROM findings").fetchone()[0], "phrasing")
+
+    def test_a_pure_reordering_keeps_its_label(self):
+        self.ingest("We needed the intervals only already to test the smoothing.", [self.fix("needed the intervals only", "only needed the intervals", category="word-order")])
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            self.assertEqual(c.execute("SELECT category FROM findings").fetchone()[0], "word-order")
