@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Fix, Review } from '../types'
+import { COMMAND, registerOverview } from './overview'
 
 const MODEL = 'haiku'
 const KEEP = 50
@@ -66,6 +67,21 @@ const prepare = async ($: EngineInterface, text: string): Promise<Prepared> => {
 }
 
 // `shown` is the text as the message row will draw it, which is the key the fixes are looked up by.
+// Prepares the overview's written summaries in the background when the backend says they are due, so opening the pane shows them at once.
+const refreshSummaries = async ($: EngineInterface) => {
+  try {
+    const due = JSON.parse((await script($, ['summary-due'], {})).stdout)
+    for (const mode of due.modes as string[]) {
+      const input = JSON.parse((await script($, ['summary-input', mode], {})).stdout)
+      if (input.categories.length === 0) continue
+      const reply = await $.model.complete({ model: input.model, system: input.system, prompt: input.prompt, maxTokens: 1500, timeoutMs: 180_000 })
+      if (reply.isAnswered) await script($, ['summary-store', mode], { reply: reply.text })
+    }
+  } catch {
+    // The next check tries again.
+  }
+}
+
 const review = async ($: EngineInterface, prepared: Prepared, shown: string, context: string) => {
   try {
     const reply = await $.model.complete({
@@ -112,10 +128,17 @@ const review = async ($: EngineInterface, prepared: Prepared, shown: string, con
 }
 
 export const register: Register = on => {
+  registerOverview(on)
+
   let isInteractive = true // session.start always runs before the first prompt and sets it
 
   on('session.start', async ($, e, next) => {
     isInteractive = e.isInteractive
+    await $.command.register({ name: COMMAND, description: 'English coach overview: written, spoken or both' })
+    if (e.isInteractive) {
+      $.clock.after(60_000, () => void refreshSummaries($))
+      $.clock.every(86_400_000, () => void refreshSummaries($))
+    }
 
     return next(e)
   })

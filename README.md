@@ -62,6 +62,26 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
   like a word of that language but mean something else (`data/false_friends.json`, currently German).
   It is a hint, never a rule: the reviewer decides in context, so correct uses are left alone. To add a
   language or entries, follow the format of the file.
+- **Overview pane.** `/english-coach-overview` opens a pane beside the transcript with buttons to switch
+  between written, spoken and both. Its headline is length-independent: **errors per 100 words** and the
+  share of **sentences without an error** (the share of clean messages falls with length simply because
+  long messages offer more places for a slip, so it is listed apart, by length bucket). Below: "What to work
+  on", one bar per category (errors of the last 8 weeks, most frequent first) with a one-line pattern, and
+  per category a `details` button (two more sentences) and an `examples` button (the changed words), the
+  watchlist as cards, and collapsible sections for slips and "native polish". Weekly trend strips appear
+  once there are two weeks of data. Press `r` to refresh. The numbers come from `english-coach.py overview <mode>` as JSON.
+- **Pattern summaries.** The larger model (`summary_model`, default `sonnet`; `opus` takes about as long)
+  receives your corrections grouped by category (your own short fragments, their fixes and explanations, the
+  same ones the reviews already sent) and writes, per category, a headline with the general pattern, a short
+  detail, and a "what to work on" list. The three views are written in parallel (about 15 to 30 seconds), the
+  answer is stored locally, and the pane shows the last report while a new one is prepared. It is prepared
+  automatically in the background, a minute after a session starts and then daily, and when you open the
+  overview and none exists. It needs 10 or more errors in a view, and later `summary_every` (10) new ones since
+  the last report; at most every six hours (ten minutes after opening the pane); `config set auto_summary off`
+  stops that. The button "✦ Summarize patterns" (`p`) writes it on demand.
+- **Sentence counts for older messages.** Messages stored before sentence counting existed can be filled in once with
+  `english-coach.py backfill` (`--dry-run` first). It reads your own Claude Code session logs on your machine,
+  matches each message by time and word count, and writes back numbers only; no text is stored or printed.
 - **Forgetting a tip.** For an editing slip that was never a real mistake, `/english-coach:forget` deletes
   the latest tip without a trace. Unlike `dismiss`, the phrase can be flagged again later.
 - **Watchlist.** A mistake that is flagged again and again (counted per message, by the changed words,
@@ -83,6 +103,7 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 /english-coach:setup           # native language, minimum words, tips per message
 /english-coach:coach report    # weekly sparkline per category, share of clean messages, habit phrases,
                                # and (if a native language is set) slips that copy its patterns
+/english-coach-overview       # an interactive pane: written, spoken or both, with trends and examples
 /english-coach:coach recent    # the latest tips with ids
 /english-coach:coach dismiss 12 asr   # tip 12 was not my mistake (asr, false, quote or taste)
 /english-coach:coach dismiss last     # ... every tip of the last message
@@ -95,7 +116,7 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 
 Settings (`config set <key> <value>`): `native_language`, `dictation_marker` (none by default),
 `strip_marker` (on), `min_words` (default 6), `max_tips` (default 2), `icon_written` (✎) and
-`icon_dictated` (🎙︎): the icon in front of each fix, `remind_after` (2) and `resolve_after` (5) for the watchlist, `escalate_model` (sonnet) and `show_style` (off): draw style items under
+`icon_dictated` (🎙︎): the icon in front of each fix, `remind_after` (2) and `resolve_after` (5) for the watchlist, `escalate_model` (sonnet), `summary_model` (sonnet) and `show_style` (off): draw style items under
 your message, in a quieter style labelled "not an error". Both defaults are text-style symbols, so the pair
 looks alike and follows the text color; set your own if you prefer, for example Nerd Font icons with
 `config set icon_written $'\uf040'` and `config set icon_dictated $'\uf130'`.
@@ -103,7 +124,7 @@ looks alike and follows the text color; set your own if you prefer, for example 
 ## Privacy
 
 Prompts are sent to Claude (Haiku) through your own Claude Code session, the same destination as the
-prompt itself. Locally, only the corrected fragments, explanations, word counts, and whether a message was typed or dictated are stored,
+prompt itself. Locally, only the corrected fragments, explanations, word and sentence counts, and whether a message was typed or dictated are stored,
 never whole prompts, in `~/.local/share/english-coach/log.db` (override with `ENGLISH_COACH_DIR`).
 
 ## Requirements and limits

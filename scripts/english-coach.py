@@ -9,6 +9,9 @@ Usage:
   english-coach.py report             per-category weekly trend, clean-message share, habit phrases
   english-coach.py watch [add W R [note] | remove W]   recurring mistakes: list, add, remove
   english-coach.py forget [last|message|<id>]  delete the latest correction without a trace
+  english-coach.py overview [written|dictated|both]   the data of the overview pane as JSON
+  english-coach.py summary-input|summary-store [mode]   the written pattern summaries of the overview pane (the mod calls the model)
+  english-coach.py backfill [--dry-run]  one-time: sentence counts for older messages, from your own Claude Code session logs
   english-coach.py recent [n]         latest findings with ids
   english-coach.py dismiss <id|last> [reason]   not my mistake: excluded from statistics, never flagged again
   english-coach.py undismiss <id|last>          restore a dismissed finding
@@ -17,6 +20,7 @@ Usage:
   english-coach.py config [set KEY VALUE]   show or change settings
 """
 import difflib, json, os, re, sqlite3, sys, time
+from collections import Counter
 from pathlib import Path
 
 DATA = Path(os.environ.get("ENGLISH_COACH_DIR", Path.home() / ".local/share/english-coach"))
@@ -27,9 +31,9 @@ PAUSED = DATA / "paused"
 CONFIG_FILE = Path(os.environ.get("ENGLISH_COACH_CONFIG_DIR",
                                    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "english-coach")) / "config.json"
 DEFAULTS = {"native_language": None, "dictation_marker": None, "strip_marker": True, "min_words": 6, "max_tips": 2,
-            "icon_written": "\u270e", "icon_dictated": "\U0001F399\uFE0E", "show_style": False, "escalate_model": "sonnet",
+            "icon_written": "\u270e", "icon_dictated": "\U0001F399\uFE0E", "show_style": False, "escalate_model": "sonnet", "summary_model": "sonnet", "auto_summary": True, "summary_every": 10,
             "remind_after": 2, "resolve_after": 5}   # pen; studio microphone, text style
-STRING_KEYS = ("native_language", "dictation_marker", "icon_written", "icon_dictated", "escalate_model")   # text settings; None = not set
+STRING_KEYS = ("native_language", "dictation_marker", "icon_written", "icon_dictated", "escalate_model", "summary_model")   # text settings; None = not set
 
 
 def load_config():
@@ -75,11 +79,12 @@ The transfer flag is separate: it never changes the category."""
 ENGINE_FRAMED = re.compile(r"^<(bash-|command-|local-command|task-notification|system-reminder)")
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS prompts(id INTEGER PRIMARY KEY, ts REAL, words INTEGER, did_well TEXT, mode TEXT DEFAULT 'written');
+CREATE TABLE IF NOT EXISTS prompts(id INTEGER PRIMARY KEY, ts REAL, words INTEGER, did_well TEXT, mode TEXT DEFAULT 'written', sentences INTEGER);
 CREATE TABLE IF NOT EXISTS findings(id INTEGER PRIMARY KEY, prompt_id INTEGER, ts REAL, category TEXT,
   transfer INTEGER, original TEXT, fix TEXT, explanation TEXT, shown INTEGER DEFAULT 0, mode TEXT DEFAULT 'written',
-  severity TEXT DEFAULT 'error', dismissed INTEGER DEFAULT 0, dismiss_reason TEXT);
+  severity TEXT DEFAULT 'error', dismissed INTEGER DEFAULT 0, dismiss_reason TEXT, sent_idx INTEGER);
 CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS summaries(mode TEXT, category TEXT, n INTEGER, text TEXT, ts REAL, PRIMARY KEY(mode, category));
 CREATE TABLE IF NOT EXISTS habits(id INTEGER PRIMARY KEY, wrong TEXT, right TEXT, hits INTEGER DEFAULT 0, last_hit REAL,
   streak INTEGER DEFAULT 0, correct_uses INTEGER DEFAULT 0, status TEXT DEFAULT 'active', source TEXT DEFAULT 'auto', note TEXT,
   UNIQUE(wrong, right));
@@ -162,7 +167,8 @@ def db():
     c.executescript(SCHEMA)
     for table, column, declaration in (("prompts", "mode", "TEXT DEFAULT 'written'"), ("findings", "mode", "TEXT DEFAULT 'written'"),
                                        ("findings", "severity", "TEXT DEFAULT 'error'"), ("findings", "dismissed", "INTEGER DEFAULT 0"),
-                                       ("findings", "dismiss_reason", "TEXT")):
+                                       ("findings", "dismiss_reason", "TEXT"), ("prompts", "sentences", "INTEGER"),
+                                       ("findings", "sent_idx", "INTEGER")):
         if column not in [r[1] for r in c.execute(f"PRAGMA table_info({table})")]:   # databases from before this column
             c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
     return c
@@ -280,7 +286,7 @@ def clean(v, limit):
     return re.sub(r"\s+", " ", re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "", v)).strip()[:limit] if isinstance(v, str) else ""
 
 
-QUOTED = re.compile(r'```.*?```|`[^`\n]*`|"[^"\n]*"|“[^”\n]*”|^[ \t]*>.*$', re.S | re.M)
+QUOTED = re.compile(r'```.*?```|`[^`\n]*`|"[^"\n]*"|“[^”\n]*”|^[ \t]*>[^\n]*$', re.S | re.M)
 RECENT = 600   # seconds: a phrase corrected this recently and seen again is most likely a quote of the tip
 
 
@@ -563,6 +569,30 @@ def classify_slips(c, fixes, speech):
     return out
 
 
+SENTENCE_BREAK = re.compile(r"(?<=[.!?…])\s+|\n+")
+
+
+def sentence_spans(text):
+    """(start, end) of each sentence: split after . ! ? or at a line break; fenced code and blockquote lines do not count."""
+    skip = [m.span() for m in re.finditer(r"```.*?```|^[ \t]*>[^\n]*$", text, re.S | re.M)]
+    spans, start = [], 0
+    for m in list(SENTENCE_BREAK.finditer(text)) + [None]:
+        end = m.start() if m else len(text)
+        if end > start and re.search(r"\w", text[start:end]) and not any(a <= start and end <= b for a, b in skip):
+            spans.append((start, end))
+        if m:
+            start = m.end()
+    return spans
+
+
+def sentence_index(spans, text, original):
+    """Index of the sentence in which `original` starts, or None when it cannot be located."""
+    pos = text.lower().find(original.lower())
+    if pos < 0:
+        return None
+    return next((i for i, (a, b) in enumerate(spans) if a <= pos < b or (pos < a and i == 0)), None)
+
+
 def sloppy_form(prompt):
     """Necessary condition for careless mode: the message *looks* dashed off (starts lowercase or has no closing
     punctuation). Keeps a single model judgement from silencing feedback on a carefully written message."""
@@ -580,14 +610,15 @@ def store_answer(c, prompt, answer, mode="written", context=""):
         c.commit()
         return True, [], {"reminders": {}, "milestone": None}
     well = [x for x in answer.get("did_well", []) if x in CATEGORIES]
-    pid = c.execute("INSERT INTO prompts(ts, words, did_well, mode) VALUES(?,?,?,?)",
-                    (now, len(re.findall(r"\w+", prompt)), json.dumps(well), mode)).lastrowid
+    spans = sentence_spans(prompt)
+    pid = c.execute("INSERT INTO prompts(ts, words, did_well, mode, sentences) VALUES(?,?,?,?,?)",
+                    (now, len(re.findall(r"\w+", prompt)), json.dumps(well), mode, len(spans) or 1)).lastrowid
     fixes = validate(answer, prompt, recent_phrases(c), speech=(mode == "dictated"), context=context,
                      suppressed=suppressed_phrases(c))
     fixes = classify_slips(c, fixes, speech=(mode == "dictated"))
     for cat, tr, orig, fix, expl, severity in fixes:
-        c.execute("INSERT INTO findings(prompt_id, ts, category, transfer, original, fix, explanation, shown, mode, severity) "
-                  "VALUES(?,?,?,?,?,?,?,1,?,?)", (pid, now, cat, tr, orig, fix, expl, mode, severity))
+        c.execute("INSERT INTO findings(prompt_id, ts, category, transfer, original, fix, explanation, shown, mode, severity, sent_idx) "
+                  "VALUES(?,?,?,?,?,?,?,1,?,?,?)", (pid, now, cat, tr, orig, fix, expl, mode, severity, sentence_index(spans, prompt, orig)))
     reminders, milestone = update_habits(c, prompt, [(o, f, e) for _, _, o, f, e, sev in fixes if sev in ("error", "slip")])
     c.commit()
     return False, fixes, {"reminders": reminders, "milestone": milestone}
@@ -663,6 +694,217 @@ def ingest_cmd():
                       "fixes": [{"category": cat, "transfer": bool(tr), "original": o, "fix": f, "explanation": e, "severity": sev,
                                 "reminder": extras["reminders"].get(o.lower())}
                                 for cat, tr, o, f, e, sev in fixes]}))
+
+
+def core_change(original, fix):
+    """The changed words of a correction, with a little context when the change itself is tiny ("i" -> "i'll" says nothing, "i just try"
+    -> "i'll just try" does). Falls back to a shortened phrase when there is no clean change."""
+    a, b = _words(original), _words(fix)
+    ops = [o for o in difflib.SequenceMatcher(None, a, b).get_opcodes() if o[0] != "equal"]
+    if len(ops) == 1:
+        tag, i1, i2, j1, j2 = ops[0]
+        changed = " ".join(a[i1:i2] + b[j1:j2])
+        tiny = len(changed.replace(" ", "")) <= 6 or any(t in FUNCTION_WORDS or "'" in t for t in a[i1:i2] + b[j1:j2])
+        if tiny:
+            lo, hi = max(0, i1 - 2), min(len(a), i2 + 2)
+            return {"wrong": " ".join(a[lo:hi]), "right": " ".join(b[max(0, j1 - (i1 - lo)):j2 + (hi - i2)])}
+    keys = habit_keys(original, fix)
+    if keys:
+        # prefer the change that is about more than a small word ("not changing" -> "doesn't change" over "or mouse" -> "or the mouse")
+        informative = [k for k in keys if not set(k[0].split()) ^ set(k[1].split()) <= FUNCTION_WORDS]
+        key = (informative or keys)[0]
+        return {"wrong": key[0], "right": key[1]}
+    return {"wrong": original[:60], "right": fix[:60]}
+
+
+def summary_due_cmd(args=()):
+    """Which modes should get a fresh written summary now, for the mod's checks: stdout {"modes": [...]}. A mode is due when it has at
+    least 10 errors, no summary yet or `summary_every` new errors since the last one, and no attempt in the last 6 hours (10 minutes when
+    the overview pane was just opened: `--open`, so a first report is prepared as soon as someone looks)."""
+    cooldown = 600 if "--open" in args else 6 * 3600
+    out = {"modes": []}
+    if CFG["auto_summary"]:
+        c, now = db(), time.time()
+        for mode in ("both", "written", "dictated"):
+            modes = ("written", "dictated") if mode == "both" else (mode,)
+            marks = ",".join("?" * len(modes))
+            errors = c.execute(f"SELECT COUNT(*) FROM findings WHERE mode IN ({marks}) AND severity='error' AND dismissed=0", modes).fetchone()[0]
+            row = c.execute("SELECT n FROM summaries WHERE mode=? AND category='_focus'", (mode,)).fetchone()
+            attempted = get_state(c, f"summary_attempt_{mode}")
+            if errors >= 10 and (row is None or errors - row[0] >= max(1, int(CFG["summary_every"]))) and now - attempted > cooldown:
+                out["modes"].append(mode)
+    print(json.dumps(out))
+
+
+def summary_input_cmd(args):
+    """Input for the written category summaries: stdout {"model", "system", "prompt"}; the mod sends it to the larger model and passes the
+    reply to `summary-store`. The corrections are the learner's own short fragments, the same ones the reviews already sent."""
+    mode = args[0] if args and args[0] in ("written", "dictated", "both") else "both"
+    modes = ("written", "dictated") if mode == "both" else (mode,)
+    marks = ",".join("?" * len(modes))
+    c = db()
+    set_state(c, f"summary_attempt_{mode}", time.time())      # a failed attempt is not repeated for six hours
+    c.commit()
+    groups = {}
+    for cat, orig, fix, expl, tr in c.execute(
+            f"SELECT category, original, fix, explanation, transfer FROM findings WHERE mode IN ({marks}) AND severity='error' AND dismissed=0 "
+            "ORDER BY id DESC LIMIT 400", modes):
+        if len(groups.setdefault(cat, [])) < 10:
+            groups[cat].append({"original": orig, "fix": fix, "explanation": expl, "copies_native_language": bool(tr)})
+    system = ("You are an English coach summarizing the recurring problems of ONE learner"
+              + (f" whose native language is {NATIVE}" if NATIVE else "") + ". You get their corrections grouped by category; each has "
+              "the learner's words, the fix and a short explanation. For EACH category write one or two plain sentences that state the general "
+              "pattern and the rule. For each category give a HEADLINE (one sentence of at most 100 characters: the rule in plain words) and a DETAIL "
+              "(at most two sentences, up to 250 characters: what the learner tends to do and what English needs instead, with at most two tiny "
+              "examples in quotes). Do not mention counts, do not praise, do not list all examples, and do not invent a pattern when the examples "
+              "show none (then the headline says they look like one-off slips). Then give up to three 'focus' sentences of at most 140 characters: "
+              "the most useful things to work on, most important first. Reply with ONLY a JSON object: "
+              "{\"categories\": {\"<category>\": {\"headline\": \"<text>\", \"detail\": \"<text>\"}}, \"focus\": [\"<text>\"]}.")
+    print(json.dumps({"model": CFG["summary_model"] or "sonnet", "system": system,
+                      "prompt": json.dumps(groups, ensure_ascii=False), "categories": sorted(groups)}))
+
+
+def summary_store_cmd(args):
+    """stdin {"reply": model text}. Stores the category summaries and the focus list for the given mode."""
+    mode = args[0] if args and args[0] in ("written", "dictated", "both") else "both"
+    try:
+        answer = next(o for o in reversed(json_objects(json.load(sys.stdin).get("reply") or "")) if isinstance(o.get("categories"), dict))
+    except (StopIteration, ValueError):
+        print(json.dumps({"ok": False}))
+        return
+    overview = overview_data(mode)
+    totals = {cat["category"]: cat["total"] for cat in overview["categories"]}
+    c = db()
+    stored = 0
+    for cat, value in answer["categories"].items():
+        if isinstance(value, str):                                   # an older or looser answer: the text is the headline
+            value = {"headline": value, "detail": ""}
+        if cat in totals and isinstance(value, dict) and isinstance(value.get("headline"), str) and value["headline"].strip():
+            text = json.dumps({"headline": clean(value["headline"], 140), "detail": clean(value.get("detail") or "", 320)}, ensure_ascii=False)
+            c.execute("INSERT OR REPLACE INTO summaries(mode, category, n, text, ts) VALUES(?,?,?,?,?)", (mode, cat, totals[cat], text, time.time()))
+            stored += 1
+    focus = [clean(f, 300) for f in answer.get("focus", []) if isinstance(f, str) and f.strip()][:3]
+    if focus:
+        c.execute("INSERT OR REPLACE INTO summaries(mode, category, n, text, ts) VALUES(?,?,?,?,?)", (mode, "_focus", overview["errors"], json.dumps(focus), time.time()))
+    c.commit()
+    print(json.dumps({"ok": True, "stored": stored, "focus": len(focus)}))
+
+
+def overview_data(mode="both"):
+    """Everything the overview pane draws, as plain data. `mode`: written, dictated or both. Statistics count errors only;
+    slips and style items are listed apart. Weekly lists run oldest to newest, 8 weeks, None where there was no data."""
+    modes = ("written", "dictated") if mode == "both" else ("dictated" if mode == "dictated" else "written",)
+    marks = ",".join("?" * len(modes))
+    c = db()
+    now, W, WEEKS = time.time(), 7 * 86400, 8
+
+    def bucket(w):                     # w = 0 is the most recent 7 days
+        return now - (w + 1) * W, now - w * W + (1 if w == 0 else 0)
+
+    def words_between(lo, hi):
+        return c.execute(f"SELECT COALESCE(SUM(words),0) FROM prompts WHERE mode IN ({marks}) AND ts>=? AND ts<?", (*modes, lo, hi)).fetchone()[0]
+
+    def count(sql_where, params=()):
+        return c.execute(f"SELECT COUNT(*) FROM findings WHERE mode IN ({marks}) AND dismissed=0 AND {sql_where}", (*modes, *params)).fetchone()[0]
+
+    messages, words, first = c.execute(f"SELECT COUNT(*), COALESCE(SUM(words),0), MIN(ts) FROM prompts WHERE mode IN ({marks})", modes).fetchone()
+    clean = []
+    for w in range(WEEKS - 1, -1, -1):
+        lo, hi = bucket(w)
+        n = c.execute(f"SELECT COUNT(*) FROM prompts WHERE mode IN ({marks}) AND ts>=? AND ts<?", (*modes, lo, hi)).fetchone()[0]
+        k = c.execute(f"SELECT COUNT(*) FROM prompts p WHERE mode IN ({marks}) AND ts>=? AND ts<? AND NOT EXISTS "
+                      "(SELECT 1 FROM findings f WHERE f.prompt_id=p.id AND f.severity='error' AND f.dismissed=0)", (*modes, lo, hi)).fetchone()[0]
+        clean.append(k / n if n else None)
+
+    def rates(where, params=()):
+        out = []
+        for w in range(WEEKS - 1, -1, -1):
+            lo, hi = bucket(w)
+            wd = words_between(lo, hi)
+            out.append(100 * count(f"{where} AND ts>=? AND ts<?", (*params, lo, hi)) / wd if wd else None)
+        return out
+
+    def trend(where, params=()):
+        old_w, new_w = words_between(now - 8 * W, now - 4 * W), words_between(now - 4 * W, now + 1)
+        if old_w < 200 or new_w < 200:
+            return "n/a"
+        old = 100 * count(f"{where} AND ts>=? AND ts<?", (*params, now - 8 * W, now - 4 * W)) / old_w
+        new = 100 * count(f"{where} AND ts>=? AND ts<?", (*params, now - 4 * W, now + 1)) / new_w
+        return "down" if new < 0.7 * old else "up" if new > 1.3 * old else "flat"
+
+    categories = []
+    for (cat,) in c.execute(f"SELECT category FROM findings WHERE mode IN ({marks}) AND severity='error' AND dismissed=0 AND ts>? "
+                            "GROUP BY category ORDER BY COUNT(*) DESC", (*modes, now - WEEKS * W)).fetchall():
+        where, params = "severity='error' AND category=?", (cat,)
+        recent = [{"original": o, "fix": f, "explanation": e, "transfer": bool(t), "core": core_change(o, f)} for o, f, e, t in c.execute(
+            f"SELECT original, fix, explanation, transfer FROM findings WHERE mode IN ({marks}) AND severity='error' AND dismissed=0 "
+            "AND category=? ORDER BY id DESC LIMIT 12", (*modes, cat))]
+        seen = Counter((x["core"]["wrong"], x["core"]["right"]) for x in recent)
+        examples = sorted(recent, key=lambda x: -seen[(x["core"]["wrong"], x["core"]["right"])])[:3]      # recurring changes first, then the newest
+        row = c.execute("SELECT text, n FROM summaries WHERE mode=? AND category=?", (mode, cat)).fetchone()
+        total = count(where, params)
+        summary = None
+        if row:
+            try:
+                summary = json.loads(row[0])
+            except ValueError:
+                summary = {"headline": row[0], "detail": ""}
+            if not isinstance(summary, dict):
+                summary = {"headline": str(summary), "detail": ""}
+        categories.append({"category": cat, "total": total, "weekly": rates(where, params), "trend": trend(where, params), "examples": examples,
+                           "summary": summary, "summary_stale": bool(row and row[1] != total)})
+
+    def listing(severity, limit=3):
+        return [{"original": o, "fix": f, "explanation": e, "core": core_change(o, f)} for o, f, e in c.execute(
+            f"SELECT original, fix, explanation FROM findings WHERE mode IN ({marks}) AND severity=? AND dismissed=0 ORDER BY id DESC LIMIT ?",
+            (*modes, severity, limit))]
+
+    watch = [{"wrong": w, "right": r, "hits": h, "streak": st, "status": status, "note": note or "", "manual": src == "manual"}
+             for w, r, h, st, status, note, src in c.execute(
+                 "SELECT wrong, right, hits, streak, status, note, source FROM habits WHERE hits>=? OR source='manual' "
+                 "ORDER BY (status='active') DESC, hits DESC LIMIT 8", (REMIND_AFTER,))]
+    per_mode = {m: c.execute("SELECT COUNT(*) FROM prompts WHERE mode=?", (m,)).fetchone()[0] for m in ("written", "dictated")}
+    errors_total, transfer_total = count("severity='error'"), count("severity='error' AND transfer=1")
+    focus_row = c.execute("SELECT text, n FROM summaries WHERE mode=? AND category='_focus'", (mode,)).fetchone()
+    focus, focus_stale = (json.loads(focus_row[0]), focus_row[1] != errors_total) if focus_row else ([], False)
+
+    # accuracy that does not depend on how long the messages are: errors per 100 words, and the share of error-free sentences
+    sentences = c.execute(f"SELECT COALESCE(SUM(sentences),0) FROM prompts WHERE mode IN ({marks}) AND sentences IS NOT NULL", modes).fetchone()[0]
+    located = c.execute(f"SELECT COUNT(*) FROM (SELECT DISTINCT f.prompt_id, f.sent_idx FROM findings f JOIN prompts p ON p.id=f.prompt_id "
+                        f"WHERE f.mode IN ({marks}) AND f.severity='error' AND f.dismissed=0 AND f.sent_idx IS NOT NULL AND p.sentences IS NOT NULL)", modes).fetchone()[0]
+    unlocated = c.execute(f"SELECT COUNT(*) FROM findings f JOIN prompts p ON p.id=f.prompt_id WHERE f.mode IN ({marks}) AND f.severity='error' "
+                          "AND f.dismissed=0 AND f.sent_idx IS NULL AND p.sentences IS NOT NULL", modes).fetchone()[0]
+    error_sentences = min(sentences, located + unlocated)
+    length_buckets = []
+    for label, lo, hi in (("1-10 words", 1, 10), ("11-25 words", 11, 25), ("26-60 words", 26, 60), ("61+ words", 61, 10**6)):
+        n, w = c.execute(f"SELECT COUNT(*), COALESCE(SUM(words),0) FROM prompts WHERE mode IN ({marks}) AND words BETWEEN ? AND ?", (*modes, lo, hi)).fetchone()
+        if not n:
+            continue
+        clean_n = c.execute(f"SELECT COUNT(*) FROM prompts p WHERE mode IN ({marks}) AND words BETWEEN ? AND ? AND NOT EXISTS "
+                            "(SELECT 1 FROM findings f WHERE f.prompt_id=p.id AND f.severity='error' AND f.dismissed=0)", (*modes, lo, hi)).fetchone()[0]
+        errs = c.execute(f"SELECT COUNT(*) FROM findings f JOIN prompts p ON p.id=f.prompt_id WHERE f.mode IN ({marks}) AND f.severity='error' "
+                         "AND f.dismissed=0 AND p.words BETWEEN ? AND ?", (*modes, lo, hi)).fetchone()[0]
+        length_buckets.append({"label": label, "messages": n, "clean_share": clean_n / n, "per_100_words": 100 * errs / w if w else None})
+    return {
+        "mode": mode, "since": time.strftime("%Y-%m-%d", time.localtime(first)) if first else None,
+        "messages": messages, "words": words, "errors": count("severity='error'"), "slips": count("severity='slip'"),
+        "styles": count("severity='style'"), "clean_weekly": clean, "clean_now": next((v for v in reversed(clean) if v is not None), None),
+        "categories": categories[:8], "transfer": {"native": NATIVE, "weekly": rates("severity='error' AND transfer=1"),
+                                                   "trend": trend("severity='error' AND transfer=1"), "total": transfer_total,
+                                                   "share": transfer_total / errors_total if errors_total else None},
+        "weeks_with_data": sum(1 for v in clean if v is not None), "focus": focus, "focus_stale": focus_stale,
+        "summary_state": ("not_enough" if errors_total < 10 else "none" if focus_row is None else "stale" if focus_stale else "ready"),
+        "errors_needed": max(0, 10 - errors_total),
+        "errors_per_100_words": 100 * errors_total / words if words else None, "rate_weekly": rates("severity='error'"),
+        "rate_trend": trend("severity='error'"), "sentences": sentences,
+        "error_free_sentences": (1 - error_sentences / sentences) if sentences else None, "length_buckets": length_buckets,
+        "watchlist": watch, "slip_examples": listing("slip"), "style_examples": listing("style"), "messages_by_mode": per_mode,
+    }
+
+
+def overview_cmd(args):
+    mode = args[0] if args and args[0] in ("written", "dictated", "both") else "both"
+    print(json.dumps(overview_data(mode), ensure_ascii=False))
 
 
 def report():
@@ -883,6 +1125,90 @@ def watch_cmd(args):
     print("\nChange with: watch add <wrong> <right> [note]   watch remove <wrong>")
 
 
+def _as_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(_as_text(b.get("text") if isinstance(b, dict) else b) for b in content
+                        if isinstance(b, str) or (isinstance(b, dict) and b.get("type", "text") == "text"))
+    return ""
+
+
+def transcript_messages(root, since):
+    """[(epoch, text)] of the messages the user sent, from Claude Code's own session logs (all projects) touched since `since`."""
+    import datetime
+    out = []
+    for path in Path(root).glob("*/*.jsonl"):
+        try:
+            if path.stat().st_mtime < since:
+                continue
+            lines = path.read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            kind, stamp, text = o.get("type"), o.get("timestamp"), ""
+            if kind == "user" and not o.get("isMeta"):
+                text = _as_text(o.get("message", {}).get("content"))
+                if text.lstrip().startswith("<"):
+                    text = ""
+            elif kind == "attachment" and o.get("attachment", {}).get("type") == "queued_command":
+                text, stamp = _as_text(o["attachment"].get("prompt")), o["attachment"].get("timestamp") or stamp
+            elif kind == "queue-operation" and o.get("operation") == "enqueue":
+                text = _as_text(o.get("content"))
+            if text.strip() and stamp:
+                try:
+                    out.append((datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp(), text))
+                except ValueError:
+                    pass
+    return out
+
+
+def backfill_cmd(args):
+    """Fill in sentence counts and sentence positions for rows stored before they existed. Local and one-time: the coach never
+    kept message text, so this reads your own Claude Code session logs, matches each row to its message by time and word count,
+    and writes back numbers only. Nothing is printed or stored from the messages. `--dry-run` changes nothing."""
+    dry = "--dry-run" in args
+    c = db()
+    rows = c.execute("SELECT id, ts, words, mode FROM prompts WHERE sentences IS NULL ORDER BY id").fetchall()
+    if not rows:
+        print("Nothing to backfill: every message already has its sentence count.")
+        return
+    root = os.environ.get("ENGLISH_COACH_TRANSCRIPTS", str(Path.home() / ".claude" / "projects"))
+    messages = transcript_messages(root, rows[0][1] - 86400)
+    cleaned = [split_marker(text)[0] for _, text in messages]
+    counts = [len(re.findall(r"\w+", text)) for text in cleaned]
+    used, matched, exact = set(), {}, 0
+    for tolerance in (0, 2, 4):
+        for pid, ts, words, mode in rows:
+            if pid in matched:
+                continue
+            best = None
+            for i, (stamp, _) in enumerate(messages):
+                if i in used or not -2 <= ts - stamp <= 300 or abs(counts[i] - words) > tolerance:
+                    continue
+                score = abs(ts - stamp - 8) + 30 * abs(counts[i] - words)
+                if best is None or score < best[1]:
+                    best = (i, score)
+            if best:
+                used.add(best[0])
+                matched[pid] = best[0]
+                exact += tolerance == 0
+    if not dry:
+        for pid, i in matched.items():
+            text = cleaned[i]
+            spans = sentence_spans(text)
+            c.execute("UPDATE prompts SET sentences=? WHERE id=?", (len(spans) or 1, pid))
+            for fid, original in c.execute("SELECT id, original FROM findings WHERE prompt_id=?", (pid,)).fetchall():
+                c.execute("UPDATE findings SET sent_idx=? WHERE id=?", (sentence_index(spans, text, original), fid))
+        c.commit()
+    print(("Would update" if dry else "Updated") + f" {len(matched)} of {len(rows)} messages ({exact} matched exactly, "
+          f"{len(matched) - exact} by close word count); {len(rows) - len(matched)} not found in the session logs.")
+
+
 def save_config(cfg):
     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps({k: cfg[k] for k in DEFAULTS}, indent=2) + "\n")
@@ -897,7 +1223,7 @@ def config_cmd(args):
         try:
             if key in STRING_KEYS:
                 cfg[key] = None if value.lower() in ("", "none", "unset") else value
-            elif key in ("strip_marker", "show_style"):
+            elif key in ("strip_marker", "show_style", "auto_summary"):
                 cfg[key] = value.lower() in ("1", "on", "true", "yes")
             else:
                 cfg[key] = max(1, int(value))
@@ -951,8 +1277,18 @@ if __name__ == "__main__":
             report()
         elif cmd == "forget":
             forget_cmd(rest)
+        elif cmd == "summary-due":
+            summary_due_cmd(rest)
+        elif cmd == "summary-input":
+            summary_input_cmd(rest)
+        elif cmd == "summary-store":
+            summary_store_cmd(rest)
+        elif cmd == "backfill":
+            backfill_cmd(rest)
         elif cmd == "watch":
             watch_cmd(rest)
+        elif cmd == "overview":
+            overview_cmd(rest)
         elif cmd == "recent":
             recent_cmd(rest)
         elif cmd == "dismiss":

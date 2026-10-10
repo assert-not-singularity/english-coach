@@ -97,6 +97,19 @@ class Guards(Workspace):
                                  ("Look:\n> The build have failed.\nWhy?", "build have failed")):
             self.assertEqual(self.validate(prompt, original, "xx yy"), [], prompt)
 
+    def test_text_after_a_quote_block_is_still_the_users_own(self):
+        prompt = "Look:\n> The build have failed.\nBut I am since two days trying to fix it."
+        kept = self.validate(prompt, "I am since two days trying", "I have been trying for two days")
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(self.validate(prompt, "build have failed", "build has failed"), [])
+
+    def test_sentences_are_counted_without_quotes_and_code(self):
+        text = "Look at this. It fails again! Why?\nSecond line without a stop\n> a quoted line.\n```\ncode. more.\n```\nLast one."
+        spans = self.ec.sentence_spans(text)
+        self.assertEqual([text[a:b] for a, b in spans], ["Look at this.", "It fails again!", "Why?", "Second line without a stop", "Last one."])
+        self.assertEqual(self.ec.sentence_index(spans, text, "fails again"), 1)
+        self.assertIsNone(self.ec.sentence_index(spans, text, "not in the text"))
+
     def test_only_added_words_around_terse_phrasing_is_not_a_fix(self):
         self.assertEqual(self.validate("Ok. Makes sense.", "Makes sense.", "That makes sense."), [])
         self.assertEqual(self.validate("Ok. Makes sense.", "Makes sense", "Makes sense to me"), [])
@@ -344,6 +357,220 @@ class Slips(Workspace):
         out = self.ingest("Then the people call them taste, honestly.", [self.fix("call them taste", "call it taste")], mode="dictated")
         self.assertEqual(out["fixes"], [])
         self.assertEqual(self.findings()[0][3], "slip")
+
+
+class Overview(Workspace):
+    def overview(self, mode="both"):
+        return json.loads(self.cli("overview", mode))
+
+    def seed(self):
+        self.ingest("Can you explain me why this fails, please? It happens every time.", [self.fix("explain me", "explain to me", category="preposition", transfer=True)])
+        self.ingest("Can we defer this score from the text, please, now", [self.fix("defer this score", "derive this score", category="word-choice")], mode="dictated")
+        self.ingest("If have time later, I will check the logs again and tell you.", [self.fix("If have", "If I have", category="pronoun")])
+        self.ingest("Another clean message that needs no correction at all, thanks.", [])
+
+    def test_modes_are_kept_apart(self):
+        self.seed()
+        written, spoken, both = self.overview("written"), self.overview("dictated"), self.overview("both")
+        self.assertEqual((written["messages"], spoken["messages"], both["messages"]), (3, 1, 4))
+        self.assertEqual([c["category"] for c in written["categories"]], ["preposition"])
+        self.assertEqual([c["category"] for c in spoken["categories"]], ["word-choice"])
+        self.assertEqual(sorted(c["category"] for c in both["categories"]), ["preposition", "word-choice"])
+
+    def test_slips_and_errors_are_counted_apart(self):
+        self.seed()
+        data = self.overview("written")
+        self.assertEqual((data["errors"], data["slips"]), (1, 1))
+        self.assertEqual(data["slip_examples"][0]["original"], "If have")
+
+    def test_a_category_carries_examples_and_eight_weekly_values(self):
+        self.seed()
+        category = self.overview("written")["categories"][0]
+        self.assertEqual(len(category["weekly"]), 8)
+        self.assertEqual(category["examples"][0]["original"], "explain me")
+        self.assertTrue(category["examples"][0]["transfer"])
+
+    def test_examples_carry_the_changed_words_and_the_transfer_share(self):
+        self.ingest("We defer this score from the text, please check it now", [self.fix("defer this score", "derive this score", category="word-choice", transfer=True)])
+        data = self.overview("written")
+        self.assertEqual(data["categories"][0]["examples"][0]["core"], {"wrong": "defer", "right": "derive"})
+        self.assertEqual(data["transfer"]["total"], 1)
+        self.assertAlmostEqual(data["transfer"]["share"], 1.0)
+        self.assertEqual(data["weeks_with_data"], 1)
+
+    def test_accuracy_does_not_depend_on_message_length(self):
+        # the same one error in a short and in a long message: per 100 words it is lower for the long one, the clean share lower too
+        self.ingest("Can you explain me why this fails, please?", [self.fix("explain me", "explain to me", category="preposition")])
+        long_text = "This is a longer message. " * 12 + "Can you explain me why the second job fails, please?"
+        self.ingest(long_text, [self.fix("explain me", "explain to me", category="preposition")])
+        data = self.overview("written")
+        self.assertEqual(data["errors"], 1)                     # the second occurrence is a repeat of a recent correction
+        self.assertAlmostEqual(data["errors_per_100_words"], 100 * 1 / data["words"])
+        buckets = {b["label"]: b for b in data["length_buckets"]}
+        self.assertEqual(buckets["1-10 words"]["clean_share"], 0.0)
+        self.assertEqual(buckets["61+ words"]["clean_share"], 1.0)
+
+    def test_error_free_sentences(self):
+        text = "First sentence is fine. Can you explain me why this fails? Third one ends here. And a fourth."
+        self.ingest(text, [self.fix("explain me", "explain to me", category="preposition")])
+        data = self.overview("written")
+        self.assertEqual(data["sentences"], 4)
+        self.assertAlmostEqual(data["error_free_sentences"], 0.75)
+
+    def test_clean_share(self):
+        self.seed()
+        self.assertAlmostEqual(self.overview("written")["clean_now"], 2 / 3)
+
+    def test_an_empty_database_gives_empty_data(self):
+        data = self.overview("both")
+        self.assertEqual((data["messages"], data["errors"], data["categories"], data["since"]), (0, 0, [], None))
+        self.assertIsNone(data["clean_now"])
+
+    def test_dismissed_findings_leave_the_overview(self):
+        self.seed()
+        self.cli("dismiss", "1", "false")
+        self.assertEqual(self.overview("written")["categories"], [])
+
+
+class Backfill(Workspace):
+    def transcripts(self, records):
+        folder = Path(self._tmp.name) / "projects" / "-some-project"
+        folder.mkdir(parents=True)
+        (folder / "session.jsonl").write_text("\n".join(json.dumps(r) for r in records) + "\n")
+        return Path(self._tmp.name) / "projects"
+
+    def run_backfill(self, root, *args):
+        env = dict(os.environ, ENGLISH_COACH_DIR=str(self.data), ENGLISH_COACH_CONFIG_DIR=str(self.cfg), ENGLISH_COACH_TRANSCRIPTS=str(root))
+        return subprocess.run([sys.executable, "-I", str(SCRIPT), "backfill", *args], text=True, env=env, capture_output=True, timeout=60).stdout
+
+    def test_old_rows_get_sentence_counts_and_positions_from_the_session_logs(self):
+        text = "First sentence is fine. Can you explain me why this fails? Third one ends here."
+        self.ingest(text, [self.fix("explain me", "explain to me", category="preposition")])
+        with closing(sqlite3.connect(self.data / "log.db")) as c:                       # make it look like an old row
+            c.execute("UPDATE prompts SET sentences=NULL"); c.execute("UPDATE findings SET sent_idx=NULL")
+            c.commit(); ts = c.execute("SELECT ts FROM prompts").fetchone()[0]
+        import datetime
+        stamp = datetime.datetime.fromtimestamp(ts - 9, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        root = self.transcripts([{"type": "user", "timestamp": stamp, "message": {"content": text}}])
+        self.assertIn("Would update 1 of 1", self.run_backfill(root, "--dry-run"))
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            self.assertIsNone(c.execute("SELECT sentences FROM prompts").fetchone()[0])
+        self.assertIn("Updated 1 of 1", self.run_backfill(root))
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            self.assertEqual(c.execute("SELECT sentences FROM prompts").fetchone()[0], 3)
+            self.assertEqual(c.execute("SELECT sent_idx FROM findings").fetchone()[0], 1)
+
+    def test_rows_without_a_matching_message_stay_empty_and_nothing_is_printed_from_the_logs(self):
+        self.ingest("Can you explain me why this fails, please? It happens every time.", [])
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            c.execute("UPDATE prompts SET sentences=NULL"); c.commit()
+        root = self.transcripts([{"type": "user", "timestamp": "2020-01-01T00:00:00Z", "message": {"content": "A completely different old message."}}])
+        out = self.run_backfill(root)
+        self.assertIn("0 of 1", out)
+        self.assertNotIn("different", out)
+
+
+class Summaries(Workspace):
+    def overview(self, mode="both"):
+        return json.loads(self.cli("overview", mode))
+
+    def seed(self):
+        self.ingest("Can you explain me why this fails, please? It happens every time.", [self.fix("explain me", "explain to me", category="preposition", transfer=True)])
+        self.ingest("We navigate back into the overview page now and then, honestly.", [self.fix("back into the overview", "back to the overview", category="preposition", transfer=True)])
+        self.ingest("I just try reopening it once more, then we will see what happens.", [self.fix("I just try reopening", "I'll just try reopening", category="verb-form")])
+
+    def test_core_change_keeps_enough_context_to_mean_something(self):
+        core = self.ec.core_change
+        self.assertEqual(core("I just try reopening", "I'll just try reopening"), {"wrong": "i just try", "right": "i'll just try"})
+        self.assertEqual(core("or mouse pointer not changing", "or the mouse pointer doesn't change"), {"wrong": "not changing", "right": "doesn't change"})
+        self.assertEqual(core("defer this score", "derive this score"), {"wrong": "defer", "right": "derive"})
+
+    def test_summary_input_groups_the_corrections_by_category(self):
+        self.seed()
+        out = json.loads(self.cli("summary-input", "written"))
+        self.assertEqual(out["categories"], ["preposition", "verb-form"])
+        self.assertEqual(out["model"], "sonnet")
+        groups = json.loads(out["prompt"])
+        self.assertEqual(len(groups["preposition"]), 2)
+        self.assertIn("German", out["system"])
+        self.assertNotIn("dictated", out["prompt"])
+
+    def test_a_stored_summary_appears_in_the_overview_and_goes_stale_with_new_findings(self):
+        self.seed()
+        reply = json.dumps({"categories": {"preposition": {"headline": "You pick the preposition by its German counterpart.", "detail": "Learn the set phrases."},
+                                           "unknown": {"headline": "ignored", "detail": ""}},
+                            "focus": ["Watch prepositions after verbs of movement.", "Second.", "Third.", "Fourth is dropped."]})
+        self.assertEqual(json.loads(self.cli("summary-store", "written", stdin=json.dumps({"reply": "Here you go: " + reply})))["stored"], 1)
+        data = self.overview("written")
+        by_cat = {c["category"]: c for c in data["categories"]}
+        self.assertIn("German counterpart", by_cat["preposition"]["summary"]["headline"])
+        self.assertEqual(by_cat["preposition"]["summary"]["detail"], "Learn the set phrases.")
+        self.assertFalse(by_cat["preposition"]["summary_stale"])
+        self.assertIsNone(by_cat["verb-form"]["summary"])
+        self.assertEqual(len(data["focus"]), 3)
+        self.assertFalse(data["focus_stale"])
+        self.ingest("Another sentence that needs fixing, so please look at it closely now.", [self.fix("needs fixing", "needs a fix", category="verb-form")])
+        self.assertTrue(self.overview("written")["focus_stale"])
+
+    def due(self):
+        return json.loads(self.cli("summary-due"))["modes"]
+
+    def many(self, n, start=0):
+        for i in range(n):
+            self.ingest(f"Message number {start + i} says explain me the thing {start + i} please.", [self.fix(f"explain me the thing {start + i}", f"explain to me the thing {start + i}", category="preposition")])
+            self.age_findings()
+
+    def age_findings(self, seconds=3600):
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            c.execute("UPDATE findings SET ts = ts - ?", (seconds,)); c.commit()
+
+    def test_nothing_is_due_before_there_is_enough_to_summarize(self):
+        self.many(5)
+        self.assertEqual(self.due(), [])
+
+    def test_opening_the_pane_prepares_a_first_report_without_the_six_hour_wait(self):
+        self.many(10)
+        self.cli("summary-input", "written")                                           # an attempt a moment ago
+        self.assertNotIn("written", self.due())
+        self.assertNotIn("written", json.loads(self.cli("summary-due", "--open"))["modes"])      # still inside the ten minutes
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            c.execute("UPDATE state SET value = value - 700 WHERE key='summary_attempt_written'"); c.commit()
+        self.assertNotIn("written", self.due())                                           # six hours have not passed
+        self.assertIn("written", json.loads(self.cli("summary-due", "--open"))["modes"])        # ten minutes have
+
+    def test_the_overview_says_where_the_report_stands(self):
+        self.many(4)
+        data = self.overview("written")
+        self.assertEqual((data["summary_state"], data["errors_needed"]), ("not_enough", 6))
+        self.many(6, start=4)
+        self.assertEqual(self.overview("written")["summary_state"], "none")
+        self.cli("summary-store", "written", stdin=json.dumps({"reply": json.dumps({"categories": {"preposition": "x"}, "focus": ["a"]})}))
+        self.assertEqual(self.overview("written")["summary_state"], "ready")
+        self.many(1, start=10)
+        self.assertEqual(self.overview("written")["summary_state"], "stale")
+
+    def test_a_first_summary_becomes_due_at_ten_errors_and_is_not_repeated_within_six_hours(self):
+        self.many(10)
+        self.assertEqual(sorted(self.due()), ["both", "written"])
+        self.cli("summary-input", "written")
+        self.assertEqual(self.due(), ["both"])                       # written was just attempted
+        self.config({"native_language": "German", "auto_summary": False})
+        self.assertEqual(self.due(), [])
+
+    def test_a_new_summary_needs_ten_new_errors_after_the_last_one(self):
+        self.many(10)
+        self.cli("summary-store", "written", stdin=json.dumps({"reply": json.dumps({"categories": {"preposition": "x"}, "focus": ["a"]})}))
+        self.assertNotIn("written", self.due())
+        self.many(9, start=10)
+        self.assertNotIn("written", self.due())
+        self.many(1, start=19)
+        with closing(sqlite3.connect(self.data / "log.db")) as c:                 # the earlier attempt is long ago
+            c.execute("DELETE FROM state WHERE key LIKE 'summary_attempt_%'"); c.commit()
+        self.assertIn("written", self.due())
+
+    def test_unusable_replies_are_refused(self):
+        self.seed()
+        self.assertFalse(json.loads(self.cli("summary-store", "written", stdin=json.dumps({"reply": "no json here"})))["ok"])
 
 
 if __name__ == "__main__":
