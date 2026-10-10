@@ -4,7 +4,7 @@ import type { On } from 'claude-code'
 
 const PANE = 'english-coach-overview'
 
-const stats = (mode: 'both' | 'written' | 'dictated', summarized = false) => {
+const stats = (mode: 'both' | 'written' | 'dictated', summarized = false, audited = false) => {
   const messages = { both: 4, written: 3, dictated: 1 }[mode]
 
   return {
@@ -31,6 +31,9 @@ const stats = (mode: 'both' | 'written' | 'dictated', summarized = false) => {
     transfer: { native: 'German', weekly: [null, null, null, null, null, null, 0.4, 0.2], trend: 'n/a', total: 1, share: 0.5 },
     weeks_with_data: 2,
     summary_state: summarized ? 'ready' : 'none',
+    audit: audited
+      ? { scope: 'flagged', audited: 4, agree: 3, misses: 1, suspects: [{ id: 83, verdict: 'not-error', category: '', current: 'word-order', reason: 'Natural wording; the fix loses the meaning.', original: 'whether mostly the', fix: 'whether the', core: { wrong: 'whether mostly the', right: 'whether the' } }] }
+      : { scope: 'off', audited: 0, agree: 0, suspects: [], misses: 0 },
     errors_needed: 0,
     focus: summarized ? ['Check the preposition after verbs of movement.'] : [],
     focus_stale: false,
@@ -49,7 +52,7 @@ const stats = (mode: 'both' | 'written' | 'dictated', summarized = false) => {
 
 const world = (on: On) => {
   const clock = mock.clock(on)
-  const seen = { clock, due: [] as string[], summarized: false, models: [] as string[], prompts: [] as string[], stored: '' }
+  const seen = { clock, due: [] as string[], summarized: false, audited: false, calls: [] as string[], models: [] as string[], prompts: [] as string[], stored: '' }
   on('model.complete', async (_$, e) => {
     seen.models.push(e.model)
     seen.prompts.push(e.prompt)
@@ -62,11 +65,17 @@ const world = (on: On) => {
       },
     }
   })
-  on('process.run', async (_$, e) => ({
+  on('process.run', async (_$, e) => {
+    if (e.argv.includes('dismiss') || e.argv.includes('ack')) {
+      seen.calls.push(e.argv.slice(e.argv.indexOf('dismiss') >= 0 ? e.argv.indexOf('dismiss') : e.argv.indexOf('audit')).join(' '))
+      seen.audited = false
+    }
+
+    return {
     value: {
       exitCode: 0,
       stdout: e.argv.includes('overview')
-        ? JSON.stringify(stats(e.argv[e.argv.length - 1] as 'both' | 'written' | 'dictated', seen.summarized))
+        ? JSON.stringify(stats(e.argv[e.argv.length - 1] as 'both' | 'written' | 'dictated', seen.summarized, seen.audited))
         : e.argv.includes('summary-due')
           ? JSON.stringify({ modes: seen.due })
           : e.argv.includes('summary-input')
@@ -78,7 +87,7 @@ const world = (on: On) => {
       isStdoutTruncated: false,
       isStderrTruncated: false,
     },
-  }))
+  }})
   on('ui.open', async () => ({ value: { isPlaced: true as const } }))
 
   return seen
@@ -166,6 +175,30 @@ describe('overview pane', () => {
     expect(await ui.find({ text: /1\.8/ })).toBeDefined()
     await ui.press({ key: 'tab-written' })
     expect(await ui.find({ text: /0\.8/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the second opinion lists doubted tips with a button to dismiss or keep each', async ($, on) => {
+    const seen = world(on)
+    seen.audited = true
+    await run($)
+
+    const ui = await mountPane($)
+    expect(await ui.find({ text: /Second opinion/ })).toBeDefined()
+    expect(await ui.find({ text: /75%/ })).toBeDefined()
+    expect(await ui.find({ text: /the fix loses the meaning/ })).toBeDefined()
+    await ui.press({ key: 'dismiss-83' })
+    expect(seen.calls).toEqual(['dismiss 83 taste'])
+    expect(await ui.find({ text: /the fix loses the meaning/ })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the second opinion stays out of the pane while the audit is off', async ($, on) => {
+    world(on)
+    await run($)
+
+    const ui = await mountPane($)
+    expect(await ui.find({ text: /Second opinion/ })).toBeUndefined()
     await ui.unmount()
   })
 

@@ -7,7 +7,21 @@ export type Fix = {
   severity: 'error' | 'style'
   reminder?: string | null
   parts?: { original: [string, boolean][]; fix: [string, boolean][] }
+  id?: number | null
 }
+
+export type AuditSuspect = {
+  id: number
+  verdict: 'not-error' | 'style' | 'wrong-fix' | 'wrong-category'
+  category: string
+  current: string
+  reason: string
+  original: string
+  fix: string
+  core: { wrong: string; right: string }
+}
+
+export type AuditInfo = { scope: 'off' | 'flagged' | 'all'; audited: number; agree: number; suspects: AuditSuspect[]; misses: number }
 
 export type Phrase = { id: string; phrase: string; meaning: string; example: string; original: string }
 
@@ -43,6 +57,7 @@ export type WatchEntry = {
 }
 
 export type Overview = {
+  audit: AuditInfo
   mode: Mode
   since: string | null
   messages: number

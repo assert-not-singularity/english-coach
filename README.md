@@ -29,6 +29,11 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
   ignored. A phrase corrected in the last ten minutes is not corrected again, so pasting a tip back
   into a message does not produce a new one. Fixes that only add words around terse phrasing are
   dropped.
+- **Names from the chat.** The reviewer does not see the conversation, but it gets a short line with the names and
+  identifiers from the assistant's recent text that your message refers to (`Transfer_Of_Ownership`, `retry_on_timeout`, a
+  place name), even when you read them aloud as ordinary words or they were misheard. They are never reported as errors.
+  Only matching terms are sent, never the chat. Separately, wording you repeat from the assistant's last replies is
+  dropped after the review as a quotation.
 - **Careless mode.** Messages that were clearly dashed off (many typos, fragments, swearing, and
   starting lowercase or without closing punctuation) get no tip and are excluded from the
   statistics. Start a message with `~` to skip analysis entirely.
@@ -39,7 +44,7 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
   `[dictated]`), set it with `config set dictation_marker "[dictated]"` or in `/english-coach:setup`.
   A message containing the marker, anywhere and in any case, is reviewed in speech mode: likely
   mis-transcriptions (homophones such as their/there/they're, weather/whether, now/no), missing
-  punctuation, filler words, run-ons and spoken restarts or topic-first questions ("The retry logic, do we keep it?") are ignored, and only the grammar and word choice you
+  punctuation, filler words, run-ons and spoken restarts, topic-first questions ("The retry logic, do we keep it?") and asides dropped into a clause ("have not been, in quotation marks, realized") are ignored, and only the grammar and word choice you
   produced is judged. The marker is removed before Claude reads your message
   (`config set strip_marker off` keeps it). Dictated messages are counted apart from typed ones:
   the main report covers written text only, followed by a short dictated section. The coach only
@@ -94,6 +99,15 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
   occasions have passed, and it retires after five showings or once you used it twice yourself. At least four messages lie
   between two suggestions, and a message with a correction on the same words gets none. `phrases` lists them and
   `phrases ignore <id|last>` stops one for good.
+- **Second opinion (audit, off by default).** `config set audit flagged` has a larger model (`audit_model`, default
+  `sonnet`) recheck every reviewed message that got a tip, in the background and without delaying anything. It sees
+  the whole message and the assistant's recent text, which the small reviewer only partly used, and rates each tip: right, not
+  an error (taste, register, a quote, a mishearing), style, wrong fix, or wrong category. `config set audit all` also
+  checks clean messages and notes errors the reviewer missed. Only the verdicts are stored, never the message. The overview
+  shows how often the second opinion agrees and lists the tips it doubts, each with buttons to dismiss it or keep it; nothing
+  is changed or hidden automatically. `audit` in the coach command lists the same. With it on, the full message goes to a
+  second, larger model, so it costs about 600 more tokens per reviewed message, and it is meant for people who want to
+  keep the statistics clean or help tune the prompt.
 - **Forgetting a tip.** For an editing slip that was never a real mistake, `/english-coach:forget` deletes
   the latest tip without a trace. Unlike `dismiss`, the phrase can be flagged again later.
 - **Watchlist.** A mistake that is flagged again and again (counted per message, by the changed words,
@@ -121,6 +135,7 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 /english-coach:coach dismiss last     # ... every tip of the last message
 /english-coach:coach undismiss 12     # take it back
 /english-coach:forget          # delete the latest tip without a trace (also: message, or an id)
+/english-coach:coach audit     # second opinions on the tips; audit ack <id> keeps a doubted tip
 /english-coach:coach phrases   # native phrases suggested so far; ignore <id|last> / unignore <id>
 /english-coach:coach watch     # mistakes that keep coming back; add <wrong> <right> [note] / remove <wrong>
 /english-coach:coach off       # pause
@@ -129,7 +144,7 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 
 Settings (`config set <key> <value>`): `native_language`, `dictation_marker` (none by default),
 `strip_marker` (on), `min_words` (default 6), `max_tips` (default 2), `icon_written` (✎) and
-`icon_dictated` (🎙︎): the icon in front of each fix, `remind_after` (2) and `resolve_after` (5) for the watchlist, `escalate_model` (sonnet), `summary_model` (sonnet) and `show_style` (off): draw style items under
+`icon_dictated` (🎙︎): the icon in front of each fix, `remind_after` (2) and `resolve_after` (5) for the watchlist, `audit` (off, flagged or all) and `audit_model` (sonnet), `escalate_model` (sonnet), `summary_model` (sonnet) and `show_style` (off): draw style items under
 your message, in a quieter style labelled "not an error". Both defaults are text-style symbols, so the pair
 looks alike and follows the text color; set your own if you prefer, for example Nerd Font icons with
 `config set icon_written $'\uf040'` and `config set icon_dictated $'\uf130'`.
@@ -137,7 +152,7 @@ looks alike and follows the text color; set your own if you prefer, for example 
 ## Privacy
 
 Prompts are sent to Claude (Haiku) through your own Claude Code session, the same destination as the
-prompt itself. Locally, only the corrected fragments, explanations, word and sentence counts, and whether a message was typed or dictated are stored,
+prompt itself. With `audit` on, each reviewed message is also sent to the larger audit model, the same way. Locally, only the corrected fragments, explanations, word and sentence counts, and whether a message was typed or dictated are stored,
 never whole prompts, in `~/.local/share/english-coach/log.db` (override with `ENGLISH_COACH_DIR`).
 
 ## Requirements and limits

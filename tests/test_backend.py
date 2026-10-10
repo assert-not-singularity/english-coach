@@ -802,7 +802,7 @@ class ContextChange(Workspace):
 
 class WordOrderLabel(Workspace):
     def test_a_fix_that_changes_the_words_is_not_word_order(self):
-        self.ingest("I am not sure if especially the second example fits here.", [self.fix("if especially the", "if the", category="word-order")])
+        self.ingest("I wonder whether mostly the third chart tells us anything here.", [self.fix("whether mostly the", "whether the", category="word-order")])
         with closing(sqlite3.connect(self.data / "log.db")) as c:
             self.assertEqual(c.execute("SELECT category FROM findings").fetchone()[0], "phrasing")
 
@@ -810,3 +810,193 @@ class WordOrderLabel(Workspace):
         self.ingest("We needed the intervals only already to test the smoothing.", [self.fix("needed the intervals only", "only needed the intervals", category="word-order")])
         with closing(sqlite3.connect(self.data / "log.db")) as c:
             self.assertEqual(c.execute("SELECT category FROM findings").fetchone()[0], "word-order")
+
+
+class Audit(Workspace):
+    """The second opinion of a larger model: the request after a review, the stored verdicts, the overview block."""
+
+    MESSAGE = "Honestly I wonder whether mostly the third chart tells us anything here, but let us see."
+
+    def audited(self, scope="flagged"):
+        self.config({"native_language": "German", "dictation_marker": "[dictated]", "audit": scope})
+
+    def review(self, prompt=None, fixes=None, mode="written"):
+        fixes = [self.fix("whether mostly the", "whether the")] if fixes is None else fixes
+        return self.ingest(prompt or self.MESSAGE, fixes, mode=mode)
+
+    def verdict(self, out, verdict="not-error", **extra):
+        tip = out["fixes"][0]["id"]
+        reply = json.dumps({"verdicts": [dict({"id": tip, "verdict": verdict, "category": "", "reason": "Natural wording."}, **extra)], "missed": []})
+        return json.loads(self.cli("audit-store", stdin=json.dumps({"reply": reply, "prompt": self.MESSAGE, "prompt_id": out["audit"]["prompt_id"]})))
+
+    def test_off_by_default_nothing_is_requested(self):
+        self.assertIsNone(self.review()["audit"])
+
+    def test_flagged_requests_a_second_opinion_only_for_messages_with_tips(self):
+        self.audited("flagged")
+        out = self.review()
+        self.assertEqual(out["audit"]["scope"], "flagged")
+        self.assertEqual(out["audit"]["model"], "sonnet")
+        block = json.loads(out["audit"]["user"])
+        self.assertEqual(block["message"], self.MESSAGE)
+        self.assertEqual(block["tips"][0]["id"], out["fixes"][0]["id"])
+        self.assertNotIn("missed", out["audit"]["system"])
+        self.assertIsNone(self.review("A clean message about the plan that has no problem at all.", fixes=[])["audit"])
+
+    def test_all_also_checks_clean_messages_and_asks_for_missed_errors(self):
+        self.audited("all")
+        out = self.review("A clean message about the plan that has no problem at all.", fixes=[])
+        self.assertIn("missed", out["audit"]["system"])
+        self.assertEqual(json.loads(out["audit"]["user"])["tips"], [])
+
+    def test_a_careless_message_is_never_audited(self):
+        self.audited("all")
+        reply = json.dumps({"careless": True, "fixes": [], "did_well": []})
+        out = json.loads(self.cli("ingest", stdin=json.dumps({"prompt": "ok lets try that now and see", "mode": "written", "reply": reply})))
+        self.assertIsNone(out["audit"])
+
+    def test_the_dictated_note_is_in_the_request(self):
+        self.audited("flagged")
+        out = self.review(mode="dictated")
+        self.assertIn("DICTATED", out["audit"]["system"])
+
+    def test_verdicts_are_stored_without_the_message(self):
+        self.audited("flagged")
+        out = self.review()
+        self.assertEqual(self.verdict(out)["verdicts"], 1)
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            dump = "\n".join(c.iterdump())
+            self.assertEqual(c.execute("SELECT verdict, reason FROM audits").fetchall(), [("not-error", "Natural wording.")])
+        self.assertNotIn("third chart tells us anything", dump)
+
+    def test_foreign_ids_and_unknown_verdicts_are_ignored(self):
+        self.audited("flagged")
+        out = self.review()
+        reply = json.dumps({"verdicts": [{"id": 9999, "verdict": "ok"}, {"id": out["fixes"][0]["id"], "verdict": "maybe"}, "x"]})
+        stored = json.loads(self.cli("audit-store", stdin=json.dumps({"reply": reply, "prompt": self.MESSAGE, "prompt_id": out["audit"]["prompt_id"]})))
+        self.assertEqual(stored["verdicts"], 0)
+
+    def test_a_wrong_category_verdict_keeps_the_suggested_category(self):
+        self.audited("flagged")
+        out = self.review()
+        self.verdict(out, "wrong-category", category="phrasing")
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            self.assertEqual(c.execute("SELECT category FROM audits").fetchone()[0], "phrasing")
+
+    def test_missed_errors_are_kept_only_in_all_scope_and_only_when_they_occur_in_the_message(self):
+        self.audited("all")
+        out = self.review("We should take care that the build explain me the failure soon.", fixes=[])
+        reply = json.dumps({"verdicts": [], "missed": [{"original": "build explain me", "fix": "build explains it to me", "category": "agreement", "reason": "x"},
+                                                       {"original": "words that are not there", "fix": "other words", "category": "other", "reason": "x"}]})
+        stored = json.loads(self.cli("audit-store", stdin=json.dumps({"reply": reply, "prompt": "We should take care that the build explain me the failure soon.",
+                                                                       "prompt_id": out["audit"]["prompt_id"]})))
+        self.assertEqual(stored["missed"], 1)
+        self.audited("flagged")
+        again = json.loads(self.cli("audit-store", stdin=json.dumps({"reply": reply, "prompt": "We should take care that the build explain me the failure soon.",
+                                                                      "prompt_id": out["audit"]["prompt_id"]})))
+        self.assertEqual(again["missed"], 0)
+
+    def test_overview_counts_agreement_and_lists_open_doubts(self):
+        self.audited("flagged")
+        first = self.review()
+        self.verdict(first, "not-error")
+        second = self.review("Can you explain me why this fails, please? It happens every time.", fixes=[self.fix("explain me", "explain to me", category="preposition")])
+        self.verdict(second, "ok")
+        data = json.loads(self.cli("overview", "written"))["audit"]
+        self.assertEqual((data["audited"], data["agree"]), (2, 1))
+        self.assertEqual([s["id"] for s in data["suspects"]], [first["fixes"][0]["id"]])
+        self.assertIn("whether mostly the", self.cli("audit"))
+
+    def test_keeping_or_dismissing_a_doubted_tip_removes_it_from_the_list(self):
+        self.audited("flagged")
+        out = self.review()
+        self.verdict(out, "not-error")
+        tip = out["fixes"][0]["id"]
+        self.assertIn("leaves the list", self.cli("audit", "ack", str(tip)))
+        self.assertEqual(json.loads(self.cli("overview", "written"))["audit"]["suspects"], [])
+        other = self.review("Please explain me the third example again, because it is unclear.", fixes=[self.fix("explain me", "explain to me", category="preposition")])
+        self.verdict(other, "not-error")
+        self.cli("dismiss", str(other["fixes"][0]["id"]), "taste")
+        self.assertEqual(json.loads(self.cli("overview", "written"))["audit"]["suspects"], [])
+
+    def test_the_setting_accepts_only_known_values(self):
+        self.assertIn("Saved audit = 'all'", self.cli("config", "set", "audit", "all"))
+        env = dict(os.environ, ENGLISH_COACH_DIR=str(self.data), ENGLISH_COACH_CONFIG_DIR=str(self.cfg))
+        bad = subprocess.run([sys.executable, "-I", str(SCRIPT), "config", "set", "audit", "sometimes"], env=env, capture_output=True, text=True)
+        self.assertNotEqual(bad.returncode, 0)
+
+    def test_without_audit_the_list_explains_how_to_switch_it_on(self):
+        self.assertIn("config set audit", self.cli("audit"))
+
+
+class ContextCounters(Workspace):
+    def state(self, key):
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            row = c.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
+            return float(row[0]) if row else None
+
+    def test_the_review_notes_how_much_chat_context_it_got_without_keeping_it(self):
+        self.ingest("Can you explain me why this fails, please? It happens every time.", [], context="The assistant said something about the build.")
+        self.assertEqual(self.state("context_chars_last"), len("The assistant said something about the build."))
+        self.ingest("Another message that is long enough to be a review, thank you.", [], context="")
+        self.assertEqual((self.state("context_empty"), self.state("context_reviews")), (1, 2))
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            self.assertNotIn("something about the build", "\n".join(c.iterdump()))
+
+
+class ContextTerms(Workspace):
+    CHAT = "The edge type Transfer_Of_Ownership links a seller to a buyer. Use `retry_on_timeout` or the Haldor Refinery map; getUserName is unrelated."
+
+    def test_only_terms_the_message_refers_to_are_picked(self):
+        terms = self.ec.context_terms
+        self.assertEqual(terms(self.CHAT, "Oh I think the seller is only linked by transfer of ownership which is weak"), ["Transfer_Of_Ownership"])
+        self.assertEqual(terms(self.CHAT, "maybe turn on retry on timeout for this job"), ["retry_on_timeout"])
+        self.assertEqual(terms(self.CHAT, "please explain the parser to me again"), [])
+
+    def test_a_misheard_name_still_matches(self):
+        self.assertEqual(self.ec.context_terms(self.CHAT, "and the Haldore refinery is on the old map"), ["Haldor Refinery"])
+
+    def test_no_context_or_no_text_gives_nothing(self):
+        self.assertEqual(self.ec.context_terms("", "transfer of ownership"), [])
+        self.assertEqual(self.ec.context_terms(self.CHAT, ""), [])
+
+    def test_sentence_starts_are_not_names(self):
+        self.assertEqual(self.ec.context_terms("The Haldor plant is closed. Then Maria called.", "the haldor plant is closed again today"), [])
+
+    def test_the_review_prompt_carries_the_hint_but_not_the_chat(self):
+        out = json.loads(self.cli("prepare", stdin=json.dumps({"prompt": "Oh I think the seller is only linked by transfer of ownership, which is weak.", "context": self.CHAT})))
+        self.assertIn("Transfer_Of_Ownership", out["system"])
+        self.assertNotIn("links a seller to a buyer", out["system"])
+
+    def test_without_a_matching_term_the_prompt_has_no_hint_line(self):
+        out = json.loads(self.cli("prepare", stdin=json.dumps({"prompt": "Can you explain me why this fails, please?", "context": self.CHAT})))
+        self.assertNotIn("Names and identifiers", out["system"])
+
+
+class ContextTerms(Workspace):
+    CHAT = "The edge type Transfer_Of_Ownership links a seller to a buyer. Use `retry_on_timeout` or the Haldor Refinery map; getUserName is unrelated."
+
+    def test_only_terms_the_message_refers_to_are_picked(self):
+        terms = self.ec.context_terms
+        self.assertEqual(terms(self.CHAT, "Oh I think the seller is only linked by transfer of ownership which is weak"), ["Transfer_Of_Ownership"])
+        self.assertEqual(terms(self.CHAT, "maybe turn on retry on timeout for this job"), ["retry_on_timeout"])
+        self.assertEqual(terms(self.CHAT, "please explain the parser to me again"), [])
+
+    def test_a_misheard_name_still_matches(self):
+        self.assertEqual(self.ec.context_terms(self.CHAT, "and the Haldore refinery is on the old map"), ["Haldor Refinery"])
+
+    def test_no_context_or_no_text_gives_nothing(self):
+        self.assertEqual(self.ec.context_terms("", "transfer of ownership"), [])
+        self.assertEqual(self.ec.context_terms(self.CHAT, ""), [])
+
+    def test_sentence_starts_are_not_names(self):
+        self.assertEqual(self.ec.context_terms("The Haldor plant is closed. Then Maria called.", "the haldor plant is closed again today"), [])
+
+    def test_the_review_prompt_carries_the_hint_but_not_the_chat(self):
+        out = json.loads(self.cli("prepare", stdin=json.dumps({"prompt": "Oh I think the seller is only linked by transfer of ownership, which is weak.", "context": self.CHAT})))
+        self.assertIn("Transfer_Of_Ownership", out["system"])
+        self.assertNotIn("links a seller to a buyer", out["system"])
+
+    def test_without_a_matching_term_the_prompt_has_no_hint_line(self):
+        out = json.loads(self.cli("prepare", stdin=json.dumps({"prompt": "Can you explain me why this fails, please?", "context": self.CHAT})))
+        self.assertNotIn("Names and identifiers", out["system"])

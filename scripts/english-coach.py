@@ -12,6 +12,7 @@ Usage:
   english-coach.py overview [written|dictated|both]   the data of the overview pane as JSON
   english-coach.py summary-input|summary-store [mode]   the written pattern summaries of the overview pane (the mod calls the model)
   english-coach.py backfill [--dry-run]  one-time: sentence counts for older messages, from your own Claude Code session logs
+  english-coach.py audit [ack <id>]   second opinions of the larger model on the tips (needs `config set audit flagged|all`)
   english-coach.py phrases [ignore|unignore <id|last>]   native phrases suggested so far; ignore one for good
   english-coach.py recent [n]         latest findings with ids
   english-coach.py dismiss <id|last> [reason]   not my mistake: excluded from statistics, never flagged again
@@ -33,8 +34,8 @@ CONFIG_FILE = Path(os.environ.get("ENGLISH_COACH_CONFIG_DIR",
                                    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "english-coach")) / "config.json"
 DEFAULTS = {"native_language": None, "dictation_marker": None, "strip_marker": True, "min_words": 6, "max_tips": 2,
             "icon_written": "\u270e", "icon_dictated": "\U0001F399\uFE0E", "show_style": False, "escalate_model": "sonnet", "summary_model": "sonnet", "auto_summary": True, "summary_every": 10,
-            "remind_after": 2, "resolve_after": 5}   # pen; studio microphone, text style
-STRING_KEYS = ("native_language", "dictation_marker", "icon_written", "icon_dictated", "escalate_model", "summary_model")   # text settings; None = not set
+            "remind_after": 2, "resolve_after": 5, "audit": "off", "audit_model": "sonnet"}   # pen; studio microphone, text style
+STRING_KEYS = ("native_language", "dictation_marker", "icon_written", "icon_dictated", "escalate_model", "summary_model", "audit", "audit_model")   # text settings; None = not set
 
 
 def load_config():
@@ -56,6 +57,7 @@ CFG = load_config()
 NATIVE = CFG["native_language"]          # None = unknown: no assumption is made about the user's language
 MIN_WORDS, MAX_CHARS = max(1, int(CFG["min_words"])), 2000
 MAX_TIPS = max(1, int(CFG["max_tips"]))
+AUDIT = (CFG["audit"] or "off").lower() if (CFG["audit"] or "off").lower() in ("off", "flagged", "all") else "off"
 REMIND_AFTER = max(1, int(CFG["remind_after"]))     # flags of the same mistake before the reminder line appears
 RESOLVE_AFTER = max(1, int(CFG["resolve_after"]))   # correct uses in a row before a mistake leaves the watchlist
 BTW_COOLDOWN = 3 * 86400
@@ -89,6 +91,8 @@ CREATE TABLE IF NOT EXISTS summaries(mode TEXT, category TEXT, n INTEGER, text T
 CREATE TABLE IF NOT EXISTS habits(id INTEGER PRIMARY KEY, wrong TEXT, right TEXT, hits INTEGER DEFAULT 0, last_hit REAL,
   streak INTEGER DEFAULT 0, correct_uses INTEGER DEFAULT 0, status TEXT DEFAULT 'active', source TEXT DEFAULT 'auto', note TEXT,
   UNIQUE(wrong, right));
+CREATE TABLE IF NOT EXISTS audits(finding_id INTEGER PRIMARY KEY, verdict TEXT, category TEXT, reason TEXT, ts REAL, ack INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS audit_misses(id INTEGER PRIMARY KEY, prompt_id INTEGER, ts REAL, category TEXT, original TEXT, fix TEXT, reason TEXT);
 CREATE TABLE IF NOT EXISTS phrases(id TEXT PRIMARY KEY, shown INTEGER DEFAULT 0, skipped INTEGER DEFAULT 0, uses INTEGER DEFAULT 0,
   status TEXT DEFAULT 'active', last_shown REAL);
 """
@@ -148,7 +152,7 @@ def system_prompt(speech=False, text="", phrases=()):
                     'mishearing), whatever its grammar; otherwise false\n') if speech else ""
     speech_rules = ("SPEECH MODE: this text was produced by speech recognition, the user dictated it. Ignore likely mis-transcriptions "
                     "(homophones and sound-alikes such as their/there/they're or weather/whether, misheard or split words), missing or odd "
-                    "punctuation and capitalization, filler words, false starts and run-on sentences. The tool also removes spoken pauses, so a topic named first and then a question or comment about it (\"What you are doing right now, is this in line with the plan?\", \"The retry logic, do we keep it?\"), a restart or an afterthought is ordinary spoken syntax: never flag its word order or a pronoun that picks the topic up again. Judge only the grammar and word choice "
+                    "punctuation and capitalization, filler words, false starts and run-on sentences. The tool also removes spoken pauses, so a topic named first and then a question or comment about it (\"What you are doing right now, is this in line with the plan?\", \"The retry logic, do we keep it?\"), a restart or an afterthought is ordinary spoken syntax: never flag its word order or a pronoun that picks the topic up again. Punctuation that is spoken aloud (\"in quotation marks\", \"quote unquote\", \"in brackets\", \"air quotes\") announces that the next word is quoted or set apart, and an aside dropped into the middle of a clause (\"have not been, in quotation marks, realized\") is ordinary speech: never move it, rewrite it, or flag the word order around it. Judge only the grammar and word choice "
                     "the speaker produced, never register or formality. If a phrase makes little sense, first check whether a similar-sounding phrase would make it a sensible sentence (\"to define\" for \"still fine\"): that is a transcription error, never flag it. Never set \"careless\".\n\n" if speech else "")
     hint = false_friend_hint(n, text)
     return f"""You are an English writing coach inside a coding tool. The user is {who} who talks to a coding assistant in English, in informal, task-focused messages, and wants to improve the language. Feedback is shown as a small dim note, so a pedantic or wrong correction costs more than a missed one.
@@ -455,9 +459,44 @@ def validate(answer, prompt, recent=(frozenset(), frozenset()), speech=False, co
 
 
 
-def build_system(c, speech=False, text=""):
+LEAD_WORDS = {"the", "this", "that", "these", "those", "and", "but", "for", "with", "when", "then", "if", "it", "in", "on", "at", "we", "you", "so", "also", "see"}
+
+
+def context_terms(context, text, limit=6):
+    """Names and identifiers from the recent chat that the message seems to refer to (spoken, so possibly spelled out or misheard):
+    `backticked` terms, snake_case, CamelCase and names of capitalised words. Only the ones that share words with the message are
+    kept, so the reviewer gets a short, relevant hint and never the chat itself."""
+    if not context or not text:
+        return []
+    found = {}
+    for m in re.finditer(r"`([^`\n]{2,40})`", context):
+        found[m.group(1).strip()] = 1
+    for m in re.finditer(r"\b[A-Za-z]+(?:_[A-Za-z0-9]+)+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b|\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b", context):
+        found[m.group(0)] = 1
+    for m in re.finditer(r"\b[A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,})+\b", context):
+        words = m.group(0).split()
+        while words and words[0].lower() in LEAD_WORDS:
+            words = words[1:]
+        if len(words) >= 2:
+            found[" ".join(words)] = 1
+    message = set(_words(text))
+    scored = []
+    for term in found:
+        parts = [p.lower() for p in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", term)]
+        if not parts or (len(parts) == 1 and len(parts[0]) < 6):
+            continue
+        hit = sum(1 for p in parts if p in message or (len(p) >= 4 and any(difflib.SequenceMatcher(None, p, w).ratio() >= 0.85 for w in message)))
+        if hit >= max(1, (len(parts) + 1) // 2):
+            scored.append((-hit / len(parts), -hit, term))
+    return [t for _, _, t in sorted(scored)][:limit]
+
+
+def build_system(c, speech=False, text="", context=""):
     top = [k for k, _ in sorted(recurrence(c).items(), key=lambda kv: -kv[1])[:3]]
-    return (system_prompt(speech, text, phrase_candidates(c, text)) + (f"\nPay slightly more attention to this learner's recurring areas: {', '.join(top)}." if top else "")
+    terms = context_terms(context, text)
+    hint = (f"\nNames and identifiers from the recent conversation that the message may be quoting or reading out (possibly spelled out, "
+            f"split into words or misheard); never report them as errors: {', '.join(terms)}.") if terms else ""
+    return (system_prompt(speech, text, phrase_candidates(c, text)) + hint + (f"\nPay slightly more attention to this learner's recurring areas: {', '.join(top)}." if top else "")
             + watch_prompt(c))
 
 
@@ -717,7 +756,7 @@ def store_answer(c, prompt, answer, mode="written", context=""):
     if mode == "written" and answer.get("careless") is True and sloppy_form(prompt):   # sloppy mode: no tips, excluded from all statistics
         set_state(c, "last_careless", now)
         c.commit()
-        return True, [], {"reminders": {}, "milestone": None, "phrase": None}
+        return True, [], {"reminders": {}, "milestone": None, "phrase": None, "ids": {}, "prompt_id": 0}
     well = [x for x in answer.get("did_well", []) if x in CATEGORIES]
     spans = sentence_spans(prompt)
     pid = c.execute("INSERT INTO prompts(ts, words, did_well, mode, sentences) VALUES(?,?,?,?,?)",
@@ -725,29 +764,31 @@ def store_answer(c, prompt, answer, mode="written", context=""):
     fixes = validate(answer, prompt, recent_phrases(c), speech=(mode == "dictated"), context=context,
                      suppressed=suppressed_phrases(c))
     fixes = classify_slips(c, fixes, speech=(mode == "dictated"))
+    ids = {}
     for cat, tr, orig, fix, expl, severity in fixes:
-        c.execute("INSERT INTO findings(prompt_id, ts, category, transfer, original, fix, explanation, shown, mode, severity, sent_idx) "
-                  "VALUES(?,?,?,?,?,?,?,1,?,?,?)", (pid, now, cat, tr, orig, fix, expl, mode, severity, sentence_index(spans, prompt, orig)))
+        ids[orig.lower()] = c.execute("INSERT INTO findings(prompt_id, ts, category, transfer, original, fix, explanation, shown, mode, severity, sent_idx) "
+                                      "VALUES(?,?,?,?,?,?,?,1,?,?,?)", (pid, now, cat, tr, orig, fix, expl, mode, severity, sentence_index(spans, prompt, orig))).lastrowid
     reminders, milestone = update_habits(c, prompt, [(o, f, e) for _, _, o, f, e, sev in fixes if sev in ("error", "slip")])
     note_phrase_uses(c, prompt)
     phrase = pick_phrase(c, prompt, answer, pid, fixes)
     c.commit()
-    return False, fixes, {"reminders": reminders, "milestone": milestone, "phrase": phrase}
+    return False, fixes, {"reminders": reminders, "milestone": milestone, "phrase": phrase, "ids": ids, "prompt_id": pid}
 
 
 def prepare_cmd():
-    """Mod path, step 1. stdin: {"prompt"}.
+    """Mod path, step 1. stdin: {"prompt", "context": recent assistant text, optional}.
     stdout: {"coach": bool, "text": the prompt without the dictation marker, "mode": "written"|"dictated",
              "strip": whether the mod should hand the model the text without the marker, "system", "user"}."""
     try:
-        prompt = (json.load(sys.stdin).get("prompt") or "").strip()
+        data = json.load(sys.stdin)
+        prompt, context = (data.get("prompt") or "").strip(), data.get("context") or ""
     except Exception:
-        prompt = ""
+        prompt, context = "", ""
     text, speech = split_marker(prompt)
     out = {"coach": False, "text": text, "mode": "dictated" if speech else "written",
            "strip": bool(speech and CFG["strip_marker"])}
     if not PAUSED.exists() and coachable(text):
-        out.update(coach=True, system=build_system(db(), speech, text), user=user_block(text))
+        out.update(coach=True, system=build_system(db(), speech, text, context), user=user_block(text))
     out["escalate_model"] = CFG["escalate_model"] if speech else None
     print(json.dumps(out))
 
@@ -792,6 +833,9 @@ def ingest_cmd():
         print(json.dumps({"ok": False}))
         return
     c = db()
+    set_state(c, "context_chars_last", len(context))        # numbers only: lets a missing context (a quote guard that cannot work) be noticed
+    set_state(c, "context_empty", get_state(c, "context_empty") + (0 if context else 1))
+    set_state(c, "context_reviews", get_state(c, "context_reviews") + 1)
     careless, fixes, extras = store_answer(c, prompt, answer, mode, context)
     rec = recurrence(c)
     errors = sorted((f for f in fixes if f[5] == "error"), key=lambda f: -rec.get(f[0], 0))[:MAX_TIPS]   # recurring areas first
@@ -801,9 +845,10 @@ def ingest_cmd():
     hint = setup_hint(c)
     c.commit()
     icon = CFG["icon_dictated" if mode == "dictated" else "icon_written"] or DEFAULTS["icon_dictated" if mode == "dictated" else "icon_written"]
-    print(json.dumps({"ok": True, "careless": careless, "btw": btw, "hint": hint, "icon": icon, "phrase": extras["phrase"],
+    audit = audit_request(prompt, context, mode, fixes, extras) if not careless else None
+    print(json.dumps({"ok": True, "careless": careless, "btw": btw, "hint": hint, "icon": icon, "phrase": extras["phrase"], "audit": audit,
                       "fixes": [{"category": cat, "transfer": bool(tr), "original": o, "fix": f, "explanation": e, "severity": sev,
-                                "reminder": extras["reminders"].get(o.lower()), "parts": diff_parts(o, f)}
+                                "reminder": extras["reminders"].get(o.lower()), "parts": diff_parts(o, f), "id": extras["ids"].get(o.lower())}
                                 for cat, tr, o, f, e, sev in fixes]}))
 
 
@@ -848,6 +893,116 @@ def diff_parts(original, fix, context=2):
         return parts
 
     return {"original": side(a, 0), "fix": side(b, 1)}
+
+
+AUDIT_VERDICTS = ("ok", "not-error", "style", "wrong-fix", "wrong-category")
+
+
+def audit_system(speech, scope):
+    who = f"a non-native English speaker (native language: {NATIVE})" if NATIVE else "a non-native English speaker"
+    speech_note = ("\nThis message was DICTATED: speech-recognition mishearings, missing punctuation, filler words, false starts, run-ons and the pauses a "
+                   "speech tool removes (a topic named first, then a question about it) are not the speaker's errors.") if speech else ""
+    missed = (' Also list up to 2 clear errors the coach missed, as "missed": original copied verbatim from the message, fix, category, reason. List none '
+              "unless a native editor would certainly mark it; the same limits about what is not an error apply.") if scope == "all" else ""
+    missed_field = ',"missed":[{"original":"","fix":"","category":"","reason":""}]' if scope == "all" else ""
+    return f"""You are a senior editor giving a second opinion on the tips of a junior English coach. The writer is {who}. For each tip, decide whether a native-speaking senior engineer would really mark the original as an error. Use the whole message and the recent chat, which the coach saw only in part.
+
+Verdicts:
+- ok: a real error and the fix is right.
+- not-error: correct, natural English, or only taste, register, informal chat style, a quote or pasted text, a typo, or a speech-recognition artifact.
+- style: correct, but a native would word it differently.
+- wrong-fix: a real problem, but the fix changes the meaning or is itself wrong.
+- wrong-category: a real error with a right fix, but the category is wrong; give the right one (one of {', '.join(CATEGORIES)}).{speech_note}
+
+When unsure, answer ok: the coach is allowed to be right. Keep each reason to one short sentence.{missed}
+Output ONLY one raw JSON object, no fences: {{"verdicts":[{{"id":0,"verdict":"ok","category":"","reason":""}}]{missed_field}}}"""
+
+
+def audit_request(prompt, context, mode, fixes, extras):
+    """The second-opinion request the mod sends to the larger model after a review, or None when the audit is off or has nothing to
+    check. It carries the whole message and the chat context for this one call only; only the verdicts are stored."""
+    tips = [{"id": extras["ids"][o.lower()], "original": o, "fix": f, "category": cat, "severity": sev, "explanation": e}
+            for cat, tr, o, f, e, sev in fixes if sev in ("error", "style") and o.lower() in extras["ids"]]
+    if AUDIT == "off" or (AUDIT == "flagged" and not tips):
+        return None
+    block = {"message": prompt, "recent_chat": (context or "")[-600:], "tips": tips}
+    return {"model": CFG["audit_model"] or "sonnet", "scope": AUDIT, "prompt_id": extras["prompt_id"],
+            "system": audit_system(mode == "dictated", AUDIT), "user": json.dumps(block, ensure_ascii=False)}
+
+
+def audit_store_cmd():
+    """stdin {"reply", "prompt", "prompt_id"}: store the larger model's verdicts (never the message) for this review's tips, and, in
+    scope `all`, the errors it says the coach missed (fragments that really occur in the message)."""
+    try:
+        data = json.load(sys.stdin)
+        prompt, pid = (data.get("prompt") or "").strip(), int(data.get("prompt_id") or 0)
+        answers = [o for o in json_objects(data.get("reply") or "") if isinstance(o.get("verdicts"), list)]
+        answer = answers[-1] if answers else None
+    except Exception:
+        answer = None
+    if answer is None or not pid:
+        print(json.dumps({"ok": False}))
+        return
+    c, now, stored, missed = db(), time.time(), 0, 0
+    for v in answer["verdicts"]:
+        if not isinstance(v, dict) or v.get("verdict") not in AUDIT_VERDICTS:
+            continue
+        try:
+            fid = int(v.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if not c.execute("SELECT 1 FROM findings WHERE id=? AND prompt_id=?", (fid, pid)).fetchone():
+            continue                                         # only tips of this very review
+        cat = v.get("category") if v.get("verdict") == "wrong-category" and v.get("category") in CATEGORIES else ""
+        c.execute("INSERT OR REPLACE INTO audits(finding_id, verdict, category, reason, ts, ack) VALUES(?,?,?,?,?,0)",
+                  (fid, v["verdict"], cat, clean(v.get("reason"), 200), now))
+        stored += 1
+    if AUDIT == "all":
+        low, quoted = prompt.lower(), [m.span() for m in QUOTED.finditer(prompt)]
+        for m in (answer.get("missed") if isinstance(answer.get("missed"), list) else [])[:2]:
+            if not isinstance(m, dict):
+                continue
+            orig, fix = clean(m.get("original"), 200), clean(m.get("fix"), 200)
+            a = low.find(orig.lower()) if orig else -1
+            if a == -1 or not fix or skeleton(orig) == skeleton(fix) or any(qs <= a and a + len(orig) <= qe for qs, qe in quoted):
+                continue
+            c.execute("INSERT INTO audit_misses(prompt_id, ts, category, original, fix, reason) VALUES(?,?,?,?,?,?)",
+                      (pid, now, m.get("category") if m.get("category") in CATEGORIES else "other", orig, fix, clean(m.get("reason"), 200)))
+            missed += 1
+    c.commit()
+    print(json.dumps({"ok": True, "verdicts": stored, "missed": missed}))
+
+
+def audit_data(c, marks, modes):
+    """The audit block of the overview: how often the second opinion agrees, and the tips it doubts that are still open."""
+    rows = c.execute(f"SELECT a.finding_id, a.verdict, a.category, a.reason, a.ack, f.original, f.fix, f.severity, f.dismissed, f.category FROM audits a "
+                     f"JOIN findings f ON f.id=a.finding_id WHERE f.mode IN ({marks}) ORDER BY a.finding_id DESC", modes).fetchall()
+    agree = lambda verdict, severity: verdict == "ok" or (verdict == "style" and severity == "style")
+    live = [r for r in rows if not r[8]]
+    suspects = [{"id": r[0], "verdict": r[1], "category": r[2], "reason": r[3], "original": r[5], "fix": r[6], "current": r[9],
+                 "core": context_change(r[5], r[6])} for r in live if not agree(r[1], r[7]) and not r[4]][:8]
+    misses = c.execute("SELECT COUNT(*) FROM audit_misses").fetchone()[0]
+    return {"scope": AUDIT, "audited": len(live), "agree": sum(1 for r in live if agree(r[1], r[7])), "suspects": suspects, "misses": misses}
+
+
+def audit_cmd(args):
+    """audit: how the larger model rates the tips and which ones it doubts. audit ack <id>: keep a doubted tip (it leaves the list)."""
+    c = db()
+    if args[:1] == ["ack"] and len(args) > 1 and args[1].isdigit():
+        n = c.execute("UPDATE audits SET ack=1 WHERE finding_id=?", (int(args[1]),)).rowcount
+        c.commit()
+        print(f"Kept tip {args[1]}; it leaves the list." if n else f"No audit verdict for tip {args[1]}.")
+        return
+    data = audit_data(c, "?,?", ("written", "dictated"))
+    if not data["audited"]:
+        print("No second opinions yet." + ("" if AUDIT != "off" else " Switch it on with: config set audit flagged  (or all)."))
+        return
+    print(f"Second opinion agrees with {data['agree']} of {data['audited']} tips ({round(100 * data['agree'] / data['audited'])}%). Missed errors noted: {data['misses']}.")
+    for s in data["suspects"]:
+        extra = f" (suggested category: {s['category']})" if s["category"] else ""
+        print(f"  {s['id']:4} {s['original']} -> {s['fix']}   [{s['verdict']}]{extra}  {s['reason']}")
+    if data["suspects"]:
+        print("\nNot an error? dismiss <id> [taste|false|asr|quote]    keep the tip: audit ack <id>")
 
 
 def core_change(original, fix):
@@ -1065,7 +1220,7 @@ def overview_data(mode="both"):
         "errors_per_100_words": 100 * errors_total / words if words else None, "rate_weekly": rates("severity='error'"),
         "rate_trend": trend("severity='error'"), "sentences": sentences,
         "error_free_sentences": (1 - error_sentences / sentences) if sentences else None, "length_buckets": length_buckets,
-        "watchlist": watch, "slip_examples": listing("slip"), "style_examples": listing("style"), "messages_by_mode": per_mode,
+        "watchlist": watch, "slip_examples": listing("slip"), "style_examples": listing("style"), "messages_by_mode": per_mode, "audit": audit_data(c, marks, modes),
     }
 
 
@@ -1419,7 +1574,11 @@ def config_cmd(args):
         if key not in DEFAULTS:
             sys.exit(f"Unknown setting '{key}'. Known: {', '.join(DEFAULTS)}")
         try:
-            if key in STRING_KEYS:
+            if key == "audit":
+                if value.lower() not in ("off", "flagged", "all"):
+                    sys.exit("audit must be off, flagged or all")
+                cfg[key] = value.lower()
+            elif key in STRING_KEYS:
                 cfg[key] = None if value.lower() in ("", "none", "unset") else value
             elif key in ("strip_marker", "show_style", "auto_summary"):
                 cfg[key] = value.lower() in ("1", "on", "true", "yes")
@@ -1487,6 +1646,10 @@ if __name__ == "__main__":
             watch_cmd(rest)
         elif cmd == "phrases":
             phrases_cmd(rest)
+        elif cmd == "audit":
+            audit_cmd(rest)
+        elif cmd == "audit-store":
+            audit_store_cmd()
         elif cmd == "overview":
             overview_cmd(rest)
         elif cmd == "recent":

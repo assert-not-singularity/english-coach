@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On } from 'claude-code'
 
-import type { CategoryStats, Mode, Overview, OverviewState } from '../types'
+import type { AuditSuspect, CategoryStats, Mode, Overview, OverviewState } from '../types'
 
 export const PANE = 'english-coach-overview'
 export const COMMAND = 'english-coach-overview'
@@ -275,6 +275,55 @@ export const registerOverview = (on: On) => {
                 <Text dimColor>{`  (${data.transfer.total} of ${data.errors})`}</Text>
               </Text>
             )}
+          </Box>
+        )}
+
+        {(data.audit.scope !== 'off' || data.audit.audited > 0) && (
+          <Box flexDirection="column">
+            <Heading title="Second opinion" note="a larger model rechecks each tip with the whole message; you decide" />
+            {data.audit.audited === 0 ? (
+              <Text dimColor>{'No second opinions yet. They appear after the next reviewed message.'}</Text>
+            ) : (
+              <Text>
+                <Text bold>{`${Math.round((100 * data.audit.agree) / data.audit.audited)}%`}</Text>
+                <Text dimColor>{` agree (${data.audit.agree} of ${data.audit.audited} tips)`}</Text>
+                {data.audit.misses > 0 ? <Text dimColor>{`   ${data.audit.misses} missed errors noted`}</Text> : null}
+              </Text>
+            )}
+            {data.audit.suspects.map((s: AuditSuspect) => (
+              <Box key={`doubt-${s.id}`} flexDirection="column">
+                <Text wrap="wrap">
+                  <Text dimColor>{`#${s.id}  `}</Text>
+                  <Text color="error">{s.core.wrong}</Text>
+                  <Text dimColor>{' → '}</Text>
+                  <Text color="success">{s.core.right}</Text>
+                  <Text color="warning">{`   ${s.verdict}${s.category ? ` (${s.category})` : ''}`}</Text>
+                </Text>
+                <Text dimColor italic wrap="wrap">{`  ${s.reason}`}</Text>
+                <Box columnGap={2}>
+                  <Button
+                    key={`dismiss-${s.id}`}
+                    plain
+                    dimColor
+                    label="dismiss: not my mistake"
+                    onPress={async () => {
+                      await backend($, ['dismiss', String(s.id), s.verdict === 'wrong-fix' ? 'false' : 'taste'])
+                      await load($)
+                    }}
+                  />
+                  <Button
+                    key={`keep-${s.id}`}
+                    plain
+                    dimColor
+                    label="keep the tip"
+                    onPress={async () => {
+                      await backend($, ['audit', 'ack', String(s.id)])
+                      await load($)
+                    }}
+                  />
+                </Box>
+              </Box>
+            ))}
           </Box>
         )}
 

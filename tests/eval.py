@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_SCRIPT = HERE.parent / "scripts" / "english-coach.py"
 
 
-def run_once(script, text, lang, seed=(), context="", model="haiku", no_escalation=False, offer=()):
+def run_once(script, text, lang, seed=(), context="", model="haiku", no_escalation=False, offer=(), hint_only=False):
     with tempfile.TemporaryDirectory() as tmp:
         cfg, data = Path(tmp) / "cfg", Path(tmp) / "data"
         cfg.mkdir()
@@ -40,7 +40,12 @@ def run_once(script, text, lang, seed=(), context="", model="haiku", no_escalati
                                   capture_output=True, timeout=60).stdout
 
         escalated = False
-        prep = json.loads(step("prepare", stdin=json.dumps({"prompt": text})) or "{}")
+        raw = step("prepare", stdin=json.dumps({"prompt": text, "context": context}))
+        if not raw.strip():   # the script itself failed (a syntax error, a crash): that is a failed run, not a message left alone
+            return {"careless": False, "findings": [], "error": "prepare failed (no output)", "escalated": False, "phrase": None, "coached": True}
+        prep = json.loads(raw)
+        if hint_only:   # measure the names hint alone: the quote guard after the review gets no context
+            context = ""
         if not prep.get("coach"):   # not reviewed at all (too short, pasted chat, ...): nothing stored
             return {"careless": False, "findings": [], "error": None, "escalated": False, "phrase": None, "coached": False}
         if prep.get("coach"):
@@ -119,7 +124,7 @@ def main():
 
     jobs = [(s, c, i) for s in scripts for c in cases for i in range(args.runs)]
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        outs = list(pool.map(lambda j: run_once(j[0][1], j[1]["text"], args.lang, j[1].get("seed", ()), j[1].get("context", ""), args.model, args.no_escalation, j[1].get("offer", ())), jobs))
+        outs = list(pool.map(lambda j: run_once(j[0][1], j[1]["text"], args.lang, j[1].get("seed", ()), j[1].get("context", ""), args.model, args.no_escalation, j[1].get("offer", ()), j[1].get("hint_only", False)), jobs))
 
     results, escalations = {}, {}   # (label, case id) -> list of problem lists / number of escalated runs
     for (s, c, _), out in zip(jobs, outs):

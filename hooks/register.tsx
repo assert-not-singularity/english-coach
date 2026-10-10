@@ -58,9 +58,9 @@ type Prepared = {
   user?: string
 }
 
-const prepare = async ($: EngineInterface, text: string): Promise<Prepared> => {
+const prepare = async ($: EngineInterface, text: string, context: string): Promise<Prepared> => {
   try {
-    return JSON.parse((await script($, ['prepare'], { prompt: text })).stdout) as Prepared
+    return JSON.parse((await script($, ['prepare'], { prompt: text, context })).stdout) as Prepared
   } catch {
     return { coach: false, text, mode: 'written', strip: false }
   }
@@ -79,6 +79,19 @@ const refreshSummaries = async ($: EngineInterface) => {
     }
   } catch {
     // The next check tries again.
+  }
+}
+
+type AuditRequest = { model: string; system: string; user: string; prompt_id: number }
+
+// The larger model's second opinion on one review, asked in the background right after it (setting `audit`): it sees the whole message and
+// the recent chat for this one call; only its verdicts are stored. Nothing waits for it, and a failure just skips this one.
+const audit = async ($: EngineInterface, request: AuditRequest, prompt: string) => {
+  try {
+    const reply = await $.model.complete({ model: request.model, system: request.system, prompt: request.user, maxTokens: 900, timeoutMs: 90_000 })
+    if (reply.isAnswered) await script($, ['audit-store'], { reply: reply.text, prompt, prompt_id: request.prompt_id })
+  } catch {
+    // The next review is audited again.
   }
 }
 
@@ -118,6 +131,7 @@ const review = async ($: EngineInterface, prepared: Prepared, shown: string, con
     )
     if (!result.ok) return
     if (result.hint) $.ui.toast(result.hint)
+    if (result.audit) $.clock.after(0, () => void audit($, result.audit as AuditRequest, prepared.text))
     if (result.careless || (result.fixes.length === 0 && !result.btw && !result.phrase)) return
 
     const entry: Review = { fixes: result.fixes as Fix[], phrase: result.phrase ?? null, btw: result.btw ?? null, icon: result.icon ?? '✎' }
@@ -146,8 +160,8 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     if (!isInteractive || !OWN_WORDS.has(e.origin?.kind ?? 'composer')) return next(e)
 
-    const prepared = await prepare($, e.text)
-    const context = prepared.coach ? await recentAssistantText($) : ''
+    const context = await recentAssistantText($) // the reviewer gets only the names and identifiers in it; the quote guard compares against all of it
+    const prepared = await prepare($, e.text, context)
     const isStripped = prepared.strip && prepared.text !== e.text.trim()
     const entered = await next(isStripped ? { ...e, text: prepared.text } : e)
     if (entered.drop !== undefined) return entered

@@ -481,5 +481,90 @@
   "id": "pasted-chat-thread",
   "no_review": true,
   "text": "[Image #1]\nmaria\n12 minutes ago\nwe pick the colors, i draw the first sketch\n\n12m ago\ni sent the file to your shared folder so you can check it later\n\n9m ago\nprint test result\n\nmaria\nnow\nbought more paper since i will print now 300 pages approx"
+ },
+ {
+  "id": "hint-identifier-spoken",
+  "hint_only": true,
+  "no_findings": true,
+  "context": "The edge type Transfer_Of_Ownership links a seller to a buyer and is only used for sales.",
+  "text": "Oh, I think the seller is only linked by transfer of ownership, which is a weak signal. [dictated]"
+ },
+ {
+  "id": "hint-config-key-spoken",
+  "hint_only": true,
+  "no_findings": true,
+  "context": "You can set `retry_on_timeout` in the job file, or pass --dry-run to test it.",
+  "text": "Maybe we should turn on retry on timeout for this job, I think it helps a lot. [dictated]"
+ },
+ {
+  "id": "hint-name-typed",
+  "hint_only": true,
+  "no_findings": true,
+  "context": "The Haldor Refinery in Tessa Bay was offline last week, so the Tessa Bay depot ran dry.",
+  "text": "And the Haldor Refinery connects to Tessa Bay only by one pipeline in the old map, as far as I know."
+ },
+ {
+  "id": "hint-real-error-stays",
+  "hint_only": true,
+  "flag": [
+   "explain me"
+  ],
+  "context": "The edge type Transfer_Of_Ownership links a seller to a buyer.",
+  "text": "Can you explain me why Transfer_Of_Ownership is missing from the buyer node, please?"
+ },
+ {
+  "id": "hint-unrelated-context",
+  "hint_only": true,
+  "flag": [
+   "I am since"
+  ],
+  "context": "Use `retry_on_timeout` and the Haldor Refinery map.",
+  "text": "I am since two hours trying to fix this build, without any success so far."
+ },
+ {
+  "id": "hint-probe-a",
+  "hint_only": true,
+  "no_findings": true,
+  "context": "Both chains miss: the seller to buyer step is only connected by Transfer_Of_Ownership, a verb the roads do not use.",
+  "text": "And the seller to the buyer is also connected by transfer of ownership, I think this doesn't make sense at all. [dictated]"
+ },
+ {
+  "id": "hint-probe-b",
+  "hint_only": true,
+  "no_findings": true,
+  "context": "Both chains miss: the seller to buyer step is only connected by Transfer_Of_Ownership, a verb the roads do not use.",
+  "text": "Oh, I think that the seller is only connected to the buyer by transfer of ownership. It's not that good. [dictated]"
+ },
+ {
+  "id": "hint-probe-c",
+  "hint_only": true,
+  "no_findings": true,
+  "context": "Both chains miss: the seller to buyer step is only connected by Transfer_Of_Ownership, a verb the roads do not use.",
+  "text": "So the buyer is only connected with the seller by transfer of ownership and I think this is not a real link. [dictated]"
+ },
+ {
+  "id": "speech-aside-quotation-marks",
+  "no_findings": true,
+  "text": "These are routes that have not been in quotation marks activated, so it was only a potential effect that never occurred. [dictated]"
+ },
+ {
+  "id": "speech-aside-by-the-way",
+  "no_findings": true,
+  "text": "So the reports that were by the way not sent yet are still waiting in the queue and nobody noticed. [dictated]"
+ },
+ {
+  "id": "quote-after-what-do-you-mean",
+  "no_findings": true,
+  "text": "What do you mean by the leak is in the cache not in the pool? [dictated]"
+ },
+ {
+  "id": "quote-after-you-said",
+  "no_findings": true,
+  "text": "You said the failure is in the loader and not in the parser, but I still do not understand why that matters here."
+ },
+ {
+  "id": "quote-after-when-you-say",
+  "no_findings": true,
+  "text": "When you say the problem is in the transport layer not in the codec, do you mean the whole stack? [dictated]"
  }
 ]

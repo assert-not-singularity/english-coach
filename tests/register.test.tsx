@@ -31,12 +31,14 @@ const MARKER = ' [dictated]'
 // answers once, the engine accepts the prompt and draws a bare row. `seen` records what the mod handed on.
 const world = (on: On, ingested: string) => {
   const clock = mock.clock(on)
-  const seen = { entered: '', ingestMode: '', ingestContext: '', ingestReply: '', models: [] as string[], prompts: [] as string[], escalate: false }
+  const seen = { entered: '', ingestMode: '', ingestContext: '', ingestReply: '', models: [] as string[], prompts: [] as string[], escalate: false, auditStored: '', prepareContext: '' }
 
   on('process.run', async (_$, e) => {
     const sent = JSON.parse(e.init?.stdin ?? '{}')
     const isSpeech = typeof sent.prompt === 'string' && sent.prompt.endsWith(MARKER)
     const text = isSpeech ? sent.prompt.slice(0, -MARKER.length) : sent.prompt
+    if (e.argv.includes('prepare')) seen.prepareContext = sent.context ?? ''
+    if (e.argv.includes('audit-store')) seen.auditStored = e.init?.stdin ?? ''
     if (e.argv.includes('ingest')) {
       seen.ingestMode = sent.mode
       seen.ingestContext = sent.context
@@ -198,6 +200,13 @@ describe('inline fixes', () => {
     expect(seen.ingestContext).toContain('speech-wording-is-taste')
   })
 
+  test('the recent chat goes to the prepare step, so names and identifiers in it can reach the reviewer', async ($, on) => {
+    const { seen } = world(on, INGESTED)
+    await submit($, PROMPT)
+
+    expect(seen.prepareContext).toContain('speech-wording-is-taste')
+  })
+
   test('a style item is drawn quietly and labelled as not an error', async ($, on) => {
     const styled = JSON.stringify({
       ok: true, careless: false, btw: null, hint: null,
@@ -236,6 +245,34 @@ describe('inline fixes', () => {
     expect(ui).toBeDefined()
     expect(await ui!.find({ text: /get to the point quickly/ })).toBeDefined()
     await ui!.unmount()
+  })
+
+  test('with the audit on, the larger model is asked in the background and only its verdicts are stored', async ($, on) => {
+    const audited = JSON.stringify({
+      ok: true, careless: false, btw: null, hint: null, phrase: null,
+      fixes: [{ id: 7, category: 'preposition', transfer: true, original: 'explain me', fix: 'explain to me', explanation: 'Use to.', severity: 'error' }],
+      audit: { model: 'sonnet', scope: 'flagged', prompt_id: 3, system: 'SECOND-OPINION-SYSTEM', user: '{"message":"the whole message"}' },
+    })
+    const { clock, seen } = world(on, audited)
+    await submit($, PROMPT)
+    expect(await drawnWith($, clock, PROMPT, /explain to me/)).toBeDefined()
+    for (let tries = 0; tries < 20 && seen.auditStored === ''; tries++) await clock.advance(10)
+
+    expect(seen.models).toEqual(['haiku', 'sonnet'])
+    expect(seen.prompts[1]).toBe('{"message":"the whole message"}')
+    const stored = JSON.parse(seen.auditStored)
+    expect(stored.prompt_id).toBe(3)
+    expect(stored.prompt).toBe(PROMPT)
+    expect(stored.reply).toContain('"model":"sonnet"')
+  })
+
+  test('without an audit request nothing but the review is asked', async ($, on) => {
+    const { clock, seen } = world(on, INGESTED)
+    await submit($, PROMPT)
+    expect(await drawnWith($, clock, PROMPT, /explain to me/)).toBeDefined()
+    await clock.advance(50)
+    expect(seen.models).toEqual(['haiku'])
+    expect(seen.auditStored).toBe('')
   })
 
   test('one review by default, and a second by the larger model only when the check asks for it', async ($, on) => {
