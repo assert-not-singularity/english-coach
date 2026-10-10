@@ -43,7 +43,7 @@ const world = (on: On, ingested: string) => {
         stdout: e.argv.includes('prepare')
           ? JSON.stringify({ coach: true, text, mode: isSpeech ? 'dictated' : 'written', strip: isSpeech, system: 'system', user: 'user' })
           : e.argv.includes('ingest')
-            ? ingested
+            ? JSON.stringify({ ...JSON.parse(ingested), icon: sent.mode === 'dictated' ? '\u{1F399}\uFE0E' : '\u270E' })
             : '',
         stderr: '',
         isStdoutTruncated: false,
@@ -149,13 +149,13 @@ describe('inline fixes', () => {
     expect(seen.ingestMode).toBe('written')
   })
 
-  test('fixes in dictated text carry a microphone, in typed text a pen', async ($, on) => {
+  test('fixes in dictated text carry a studio microphone, in typed text a pen', async ($, on) => {
     const spoken = world(on, INGESTED)
     await submit($, PROMPT + MARKER)
     const dictated = await drawnWith($, spoken.clock, PROMPT, /explain to me/)
     expect(dictated).toBeDefined()
-    expect(await dictated!.find({ text: /🎤/ })).toBeDefined()
-    expect(await dictated!.find({ text: /✎/ })).toBeUndefined()
+    expect(await dictated!.find({ text: /\u{1F399}/u })).toBeDefined()
+    expect(await dictated!.find({ text: /\u270E/ })).toBeUndefined()
     await dictated!.unmount()
   })
 
@@ -164,8 +164,8 @@ describe('inline fixes', () => {
     await submit($, PROMPT)
     const written = await drawnWith($, typed.clock, PROMPT, /explain to me/)
     expect(written).toBeDefined()
-    expect(await written!.find({ text: /✎/ })).toBeDefined()
-    expect(await written!.find({ text: /🎤/ })).toBeUndefined()
+    expect(await written!.find({ text: /\u270E/ })).toBeDefined()
+    expect(await written!.find({ text: /\u{1F399}/u })).toBeUndefined()
     await written!.unmount()
   })
 })

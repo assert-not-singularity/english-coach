@@ -57,7 +57,10 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 ```
 
 Settings (`config set <key> <value>`): `native_language`, `dictation_marker` (none by default),
-`strip_marker` (on), `min_words` (default 6), `max_tips` (default 2).
+`strip_marker` (on), `min_words` (default 6), `max_tips` (default 2), `icon_written` (✎) and
+`icon_dictated` (🎙︎): the icon in front of each fix. Both defaults are text-style symbols, so the pair
+looks alike and follows the text color; set your own if you prefer, for example Nerd Font icons with
+`config set icon_written $'\uf040'` and `config set icon_dictated $'\uf130'`.
 
 ## Privacy
 

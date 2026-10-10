@@ -20,8 +20,9 @@ PAUSED = DATA / "paused"
 
 CONFIG_FILE = Path(os.environ.get("ENGLISH_COACH_CONFIG_DIR",
                                    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "english-coach")) / "config.json"
-DEFAULTS = {"native_language": None, "dictation_marker": None, "strip_marker": True, "min_words": 6, "max_tips": 2}
-STRING_KEYS = ("native_language", "dictation_marker")   # text settings; None = not set
+DEFAULTS = {"native_language": None, "dictation_marker": None, "strip_marker": True, "min_words": 6, "max_tips": 2,
+            "icon_written": "\u270e", "icon_dictated": "\U0001F399\uFE0E"}   # pen; studio microphone, text style
+STRING_KEYS = ("native_language", "dictation_marker", "icon_written", "icon_dictated")   # text settings; None = not set
 
 
 def load_config():
@@ -405,7 +406,8 @@ def ingest_cmd():
     btw = None if careless or mode != "written" else maybe_btw(c)
     hint = setup_hint(c)
     c.commit()
-    print(json.dumps({"ok": True, "careless": careless, "btw": btw, "hint": hint,
+    icon = CFG["icon_dictated" if mode == "dictated" else "icon_written"] or DEFAULTS["icon_dictated" if mode == "dictated" else "icon_written"]
+    print(json.dumps({"ok": True, "careless": careless, "btw": btw, "hint": hint, "icon": icon,
                       "fixes": [{"category": cat, "transfer": bool(tr), "original": o, "fix": f, "explanation": e}
                                 for cat, tr, o, f, e in fixes]}))
 
@@ -525,7 +527,7 @@ def config_cmd(args):
         print(f"Saved {key} = {cfg[key]!r} in {CONFIG_FILE}")
         return
     for k in DEFAULTS:
-        shown = cfg[k] if cfg[k] is not None else ("(not set: no language-specific feedback)" if k == "native_language" else "(not set)")
+        shown = cfg[k] if cfg[k] is not None else ("(not set: no language-specific feedback)" if k == "native_language" else "(not set)" if k == "dictation_marker" else "(default)")
         print(f"{k}: {shown}")
     print(f"\nChange with: english-coach.py config set <key> <value>   ({CONFIG_FILE})")
 

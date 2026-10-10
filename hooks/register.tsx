@@ -60,7 +60,7 @@ const review = async ($: EngineInterface, prepared: Prepared, shown: string) => 
     if (result.hint) $.ui.toast(result.hint)
     if (result.careless || (result.fixes.length === 0 && !result.btw)) return
 
-    const entry: Review = { fixes: result.fixes as Fix[], btw: result.btw ?? null, mode: prepared.mode }
+    const entry: Review = { fixes: result.fixes as Fix[], btw: result.btw ?? null, icon: result.icon ?? '✎' }
     await update($, reviews, held => Object.fromEntries(Object.entries({ ...held, [textKey(shown)]: entry }).slice(-KEEP)))
   } catch (error) {
     $.ui.toast(`english-coach: review failed (${String(error).slice(0, 80)})`)
@@ -98,7 +98,7 @@ export const register: Register = on => {
     if (held === undefined) return drawn
 
     const { Box, Text } = $.ui.resolve(e)
-    const mark = held.mode === 'dictated' ? '🎤 ' : '✎ ' // a microphone for fixes in dictated text
+    const mark = `${held.icon} ` // configurable: one icon for typed text, one for dictated text
 
     return (
       <Box flexDirection="column">
