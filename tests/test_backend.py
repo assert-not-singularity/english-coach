@@ -304,5 +304,47 @@ class FalseFriends(Workspace):
         self.assertNotIn("Known false friends", self.system("I will become a new laptop next week, because mine is slow."))
 
 
+class Slips(Workspace):
+    def test_which_small_word_changes_are_slips(self):
+        slip = self.ec.is_small_word_slip
+        self.assertTrue(slip("If have", "If I have", speech=False))                      # a forgotten subject pronoun
+        self.assertFalse(slip("explain me", "explain to me", speech=False))              # a missing preposition is a gap when typed
+        self.assertFalse(slip("does the models", "do the models", speech=False))         # a swap is not an omission when typed
+        self.assertTrue(slip("explain me", "explain to me", speech=True))                # in dictation any small word may be misheard
+        self.assertTrue(slip("does the models", "do the models", speech=True))
+        self.assertFalse(slip("informations", "information", speech=True))              # not a small word
+        self.assertFalse(slip("defer this", "derive this", speech=False))
+
+    def age_findings(self, seconds=3600):
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            c.execute("UPDATE findings SET ts = ts - ?", (seconds,))
+            c.commit()
+
+    def test_a_first_omission_is_a_hidden_slip_not_an_error(self):
+        out = self.ingest("If have time later, I will check the logs again.", [self.fix("If have", "If I have", category="pronoun")])
+        self.assertEqual(out["fixes"], [])
+        self.assertEqual(self.findings()[0][3], "slip")
+        report = self.cli("report")
+        self.assertIn("0 tips", report.splitlines()[0])
+        self.assertIn("Slips: 1", report)
+        self.assertIn("slip", self.cli("recent"))
+
+    def test_the_same_omission_again_is_promoted_to_an_error(self):
+        self.ingest("If have time later, I will check the logs again.", [self.fix("If have", "If I have", category="pronoun")])
+        self.age_findings()
+        out = self.ingest("If have an idea tomorrow, I will write it down.", [self.fix("If have", "If I have", category="pronoun")])
+        self.assertEqual([f["severity"] for f in out["fixes"]], ["error"])
+        self.assertEqual([f[3] for f in self.findings()], ["slip", "error"])
+
+    def test_a_missing_preposition_in_typed_text_stays_an_error(self):
+        out = self.ingest("Can you explain me why this fails, please?", [self.fix("explain me", "explain to me", category="preposition")])
+        self.assertEqual([f["severity"] for f in out["fixes"]], ["error"])
+
+    def test_dictated_small_word_changes_are_slips(self):
+        out = self.ingest("Then the people call them taste, honestly.", [self.fix("call them taste", "call it taste")], mode="dictated")
+        self.assertEqual(out["fixes"], [])
+        self.assertEqual(self.findings()[0][3], "slip")
+
+
 if __name__ == "__main__":
     unittest.main()

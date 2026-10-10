@@ -524,6 +524,45 @@ def watch_prompt(c):
             "(not when the word is used correctly): " + "; ".join(f'"{w}" instead of "{r}"' for w, r in rows) + ".")
 
 
+# Small words whose omission is almost always haste (typed or dictated); in dictated text any small word may be a recognition error.
+SUBJECT_AUX = {"i", "you", "he", "she", "it", "we", "they", "is", "are", "was", "were", "am", "do", "does", "did", "will", "would"}
+FUNCTION_WORDS = SUBJECT_AUX | {"me", "him", "her", "us", "them", "a", "an", "the", "to", "of", "in", "on", "at", "for", "with", "by",
+                                "be", "been", "has", "have", "had", "and", "or", "but", "that", "this", "these", "those", "if", "as", "so"}
+
+
+def is_small_word_slip(original, fix, speech):
+    """One small word added or dropped (typed: only subject pronouns and auxiliaries, whose omission is haste; dictated: any
+    small word, also swapped for another, since those are the typical recognition errors). A performance slip, not a gap."""
+    a, b = _words(original), _words(fix)
+    ops = [o for o in difflib.SequenceMatcher(None, a, b).get_opcodes() if o[0] != "equal"]
+    if len(ops) != 1:
+        return False
+    tag, i1, i2, j1, j2 = ops[0]
+    removed, added = a[i1:i2], b[j1:j2]
+    words = FUNCTION_WORDS if speech else SUBJECT_AUX
+    if tag == "insert":
+        return len(added) == 1 and added[0] in words
+    if tag == "delete":
+        return len(removed) == 1 and removed[0] in words
+    return tag == "replace" and speech and len(removed) == 1 and len(added) == 1 and removed[0] in words and added[0] in words
+
+
+def classify_slips(c, fixes, speech):
+    """Errors that are only a small forgotten or misrecognized word become severity `slip` (stored, not shown, not counted as
+    errors), unless the same omission already happened REMIND_AFTER-1 times: a repeated one points to a gap and stays an error."""
+    out = []
+    for cat, tr, orig, fix, expl, sev in fixes:
+        if sev == "error" and is_small_word_slip(orig, fix, speech):
+            before = 0
+            for key in habit_keys(orig, fix):
+                row = c.execute("SELECT hits FROM habits WHERE wrong=? AND right=?", key).fetchone()
+                before = max(before, row[0] if row else 0)
+            if before < REMIND_AFTER - 1:
+                sev = "slip"
+        out.append((cat, tr, orig, fix, expl, sev))
+    return out
+
+
 def sloppy_form(prompt):
     """Necessary condition for careless mode: the message *looks* dashed off (starts lowercase or has no closing
     punctuation). Keeps a single model judgement from silencing feedback on a carefully written message."""
@@ -545,10 +584,11 @@ def store_answer(c, prompt, answer, mode="written", context=""):
                     (now, len(re.findall(r"\w+", prompt)), json.dumps(well), mode)).lastrowid
     fixes = validate(answer, prompt, recent_phrases(c), speech=(mode == "dictated"), context=context,
                      suppressed=suppressed_phrases(c))
+    fixes = classify_slips(c, fixes, speech=(mode == "dictated"))
     for cat, tr, orig, fix, expl, severity in fixes:
         c.execute("INSERT INTO findings(prompt_id, ts, category, transfer, original, fix, explanation, shown, mode, severity) "
                   "VALUES(?,?,?,?,?,?,?,1,?,?)", (pid, now, cat, tr, orig, fix, expl, mode, severity))
-    reminders, milestone = update_habits(c, prompt, [(o, f, e) for _, _, o, f, e, sev in fixes if sev == "error"])
+    reminders, milestone = update_habits(c, prompt, [(o, f, e) for _, _, o, f, e, sev in fixes if sev in ("error", "slip")])
     c.commit()
     return False, fixes, {"reminders": reminders, "milestone": milestone}
 
@@ -721,6 +761,10 @@ def report():
             state = "resolved" if status == "resolved" else (f"improving: {streak} correct in a row" if streak else "active")
             print(f"  {wrong} → {right}   {hits}×  " + paint("2", state))
 
+    n_slip = c.execute("SELECT COUNT(*) FROM findings WHERE severity='slip' AND dismissed=0").fetchone()[0]
+    if n_slip:
+        print(paint("2", f"\nSlips: {n_slip} forgotten or misrecognized small words (haste, not gaps; not counted as errors)"))
+
     n_style = c.execute("SELECT COUNT(*) FROM findings WHERE severity='style' AND dismissed=0").fetchone()[0]
     if n_style:
         print(paint("2", f"\nNative polish: {n_style} style suggestions (correct English a native would word differently; not errors)"))
@@ -740,7 +784,7 @@ def recent_cmd(args):
         print("No findings yet.")
         return
     for fid, mode, sev, dis, reason, orig, fix in rows:
-        tags = [t for t in ("dictated" if mode == "dictated" else "", "style" if sev == "style" else "",
+        tags = [t for t in ("dictated" if mode == "dictated" else "", sev if sev in ("style", "slip") else "",
                             f"dismissed: {reason or 'no reason'}" if dis else "") if t]
         print(f"{fid:>4}  {orig} → {fix}" + (f"   [{', '.join(tags)}]" if tags else ""))
     print("\nNot your mistake? dismiss <id> [asr|false|quote|taste]   all of the last message: dismiss last [reason]"

@@ -1,6 +1,6 @@
 {
   "name": "english-coach",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Quiet English feedback on every prompt you type: a small model reviews it in the background and the fixes appear directly under your message. Recurring weaknesses are tracked locally; careless messages are detected and ignored.",
   "author": {
     "name": "Niklas Puller"

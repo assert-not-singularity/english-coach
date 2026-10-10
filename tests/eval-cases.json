@@ -333,5 +333,27 @@
     "id": "speech-telegraphic-bug-report",
     "text": "See here. This happens really often on the dashboard now. Also the buttons not clickable or cursor not changing when moving over a menu but only after a delay. [dictated]",
     "no_findings": true
+  },
+  {
+    "id": "ff-correct-in-that-case",
+    "text": "It is only a draft, right? In that case, I probably just forgot to add the link here.",
+    "no_findings": true
+  },
+  {
+    "id": "speech-ff-correct-in-that-case",
+    "text": "It is only a draft, right? In that case, I probably just forgot to add the link here. [dictated]",
+    "no_findings": true
+  },
+  {
+    "id": "slip-forgotten-pronoun",
+    "text": "If have time later, I will check the logs again and write you the result.",
+    "no_findings": true
+  },
+  {
+    "id": "slip-typed-preposition-stays-an-error",
+    "text": "Can you explain me why this job keeps failing on the staging cluster?",
+    "flag": [
+      "explain me"
+    ]
   }
 ]

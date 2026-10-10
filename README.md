@@ -41,6 +41,12 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
   (`config set strip_marker off` keeps it). Dictated messages are counted apart from typed ones:
   the main report covers written text only, followed by a short dictated section. The coach only
   sees the transcript, so pronunciation and fluency are out of its reach.
+- **Slips.** A correction that only adds or drops one small word is a slip, not a gap in your English:
+  a forgotten "I" or "is" when typing, or any small word in dictated text, where those are the typical
+  recognition errors. Slips are stored and shown in `recent` and as one line in the report, but not drawn
+  under your message and not counted as errors. If the same omission happens again, it becomes an error
+  with the usual reminder, because a repeated omission points to a gap. A missing preposition or article in
+  typed text always stays an error.
 - **Errors and style.** Each finding has a severity. An error is something a native editor would
   mark wrong. A style item is correct English that a native would word differently, for example a
   valid but unnatural collocation or a redundancy; there is at most one per message. Style items are
