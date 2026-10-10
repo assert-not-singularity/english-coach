@@ -550,7 +550,8 @@ def uses_right(tokens, right):
 def update_habits(c, text, stored):
     """Count this message's corrections per habit and its correct uses. `stored` = [(original, fix, explanation)] of the
     error findings kept for this message. Returns ({lower original: reminder}, milestone note or None)."""
-    now, tokens, hit_keys, reminders = time.time(), _words(text), set(), {}
+    now, hit_keys, reminders = time.time(), set(), {}
+    tokens = _words(QUOTED.sub(" ", text))                          # quoted, pasted and code text is not the user's own use of a word
     for orig, fix, expl in stored:
         for key in habit_keys(orig, fix):
             if key in hit_keys:                                  # one count per message, however often it occurs in it
@@ -567,13 +568,13 @@ def update_habits(c, text, stored):
             if hits >= REMIND_AFTER and orig.lower() not in reminders:
                 reminders[orig.lower()] = f"This one keeps coming back: \"{key[1]}\" instead of \"{key[0]}\"."
     milestone = None
-    for hid, wrong, right, streak in c.execute("SELECT id, wrong, right, streak FROM habits WHERE status='active'").fetchall():
+    for hid, wrong, right, streak, hits, source in c.execute("SELECT id, wrong, right, streak, hits, source FROM habits WHERE status='active'").fetchall():
         if (wrong, right) in hit_keys or not uses_right(tokens, right):
             continue
         streak += 1
         done = streak >= RESOLVE_AFTER
         c.execute("UPDATE habits SET streak=?, correct_uses=correct_uses+1, status=? WHERE id=?", (streak, "resolved" if done else "active", hid))
-        if done and milestone is None:
+        if done and milestone is None and (hits >= REMIND_AFTER or source == "manual"):   # only an entry the user could see leaves the watchlist with a note
             milestone = f"\"{right}\" has been right {streak} times in a row, so it leaves your watchlist (was: \"{wrong}\")."
     return reminders, milestone
 

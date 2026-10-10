@@ -1000,3 +1000,36 @@ class ContextTerms(Workspace):
     def test_without_a_matching_term_the_prompt_has_no_hint_line(self):
         out = json.loads(self.cli("prepare", stdin=json.dumps({"prompt": "Can you explain me why this fails, please?", "context": self.CHAT})))
         self.assertNotIn("Names and identifiers", out["system"])
+
+
+class HabitCredit(Workspace):
+    def habit(self, wrong="defer", right="derive", hits=2):
+        self.ingest("We defer this score from the text, please check it now, thanks.", [self.fix("defer this", "derive this", category="word-choice")])
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            c.execute("UPDATE habits SET hits=? WHERE wrong=? AND right=?", (hits, wrong, right))
+            c.commit()
+
+    def row(self):
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            return c.execute("SELECT streak, status FROM habits WHERE wrong='defer'").fetchone()
+
+    def test_a_quoted_or_pasted_use_earns_no_credit(self):
+        self.habit()
+        self.ingest("> We derive the value from the file.\nAre you kidding me about this, really?", [])
+        self.assertEqual(self.row(), (0, "active"))
+        self.ingest('He wrote "derive" in the title, and `derive_all` in the code, which is odd.', [])
+        self.assertEqual(self.row(), (0, "active"))
+
+    def test_an_own_use_still_counts(self):
+        self.habit()
+        self.ingest("We should derive the score from the text instead, please check it.", [])
+        self.assertEqual(self.row(), (1, "active"))
+
+    def test_an_unseen_habit_leaves_silently(self):
+        self.habit(hits=1)
+        notes = []
+        for i in range(5):
+            out = self.ingest(f"We should derive score number {i} from the text, please check it.", [])
+            notes.append(out["btw"])
+        self.assertEqual(self.row()[1], "resolved")
+        self.assertNotIn("leaves your watchlist", " ".join(n or "" for n in notes))

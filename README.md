@@ -135,6 +135,7 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 /english-coach:coach dismiss last     # ... every tip of the last message
 /english-coach:coach undismiss 12     # take it back
 /english-coach:forget          # delete the latest tip without a trace (also: message, or an id)
+/english-coach:coach config    # show the settings; config set <key> <value> changes one (audit, show_style, ...)
 /english-coach:coach audit     # second opinions on the tips; audit ack <id> keeps a doubted tip
 /english-coach:coach phrases   # native phrases suggested so far; ignore <id|last> / unignore <id>
 /english-coach:coach watch     # mistakes that keep coming back; add <wrong> <right> [note] / remove <wrong>
