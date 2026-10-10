@@ -1,0 +1,12 @@
+{
+  "name": "english-coach",
+  "owner": { "name": "Niklas Puller" },
+  "metadata": { "description": "English writing coach for Claude Code prompts." },
+  "plugins": [
+    {
+      "name": "english-coach",
+      "source": "./",
+      "description": "Quiet English feedback on your prompts, with recurring-weakness tracking and progress notes."
+    }
+  ]
+}
