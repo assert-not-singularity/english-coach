@@ -6,10 +6,14 @@ export type Fix = {
   explanation: string
   severity: 'error' | 'style'
   reminder?: string | null
+  parts?: { original: [string, boolean][]; fix: [string, boolean][] }
 }
+
+export type Phrase = { id: string; phrase: string; meaning: string; example: string; original: string }
 
 export type Review = {
   fixes: Fix[]
+  phrase: Phrase | null
   btw: string | null
   icon: string
 }

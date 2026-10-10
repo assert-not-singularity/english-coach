@@ -12,6 +12,7 @@ Usage:
   english-coach.py overview [written|dictated|both]   the data of the overview pane as JSON
   english-coach.py summary-input|summary-store [mode]   the written pattern summaries of the overview pane (the mod calls the model)
   english-coach.py backfill [--dry-run]  one-time: sentence counts for older messages, from your own Claude Code session logs
+  english-coach.py phrases [ignore|unignore <id|last>]   native phrases suggested so far; ignore one for good
   english-coach.py recent [n]         latest findings with ids
   english-coach.py dismiss <id|last> [reason]   not my mistake: excluded from statistics, never flagged again
   english-coach.py undismiss <id|last>          restore a dismissed finding
@@ -19,7 +20,7 @@ Usage:
   english-coach.py setup              interactive setup (native language, thresholds)
   english-coach.py config [set KEY VALUE]   show or change settings
 """
-import difflib, json, os, re, sqlite3, sys, time
+import difflib, json, os, random, re, sqlite3, sys, time
 from collections import Counter
 from pathlib import Path
 
@@ -88,6 +89,8 @@ CREATE TABLE IF NOT EXISTS summaries(mode TEXT, category TEXT, n INTEGER, text T
 CREATE TABLE IF NOT EXISTS habits(id INTEGER PRIMARY KEY, wrong TEXT, right TEXT, hits INTEGER DEFAULT 0, last_hit REAL,
   streak INTEGER DEFAULT 0, correct_uses INTEGER DEFAULT 0, status TEXT DEFAULT 'active', source TEXT DEFAULT 'auto', note TEXT,
   UNIQUE(wrong, right));
+CREATE TABLE IF NOT EXISTS phrases(id TEXT PRIMARY KEY, shown INTEGER DEFAULT 0, skipped INTEGER DEFAULT 0, uses INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'active', last_shown REAL);
 """
 
 def split_marker(text):
@@ -123,7 +126,19 @@ def false_friend_hint(native, text=""):
             f"used correctly in English: {listed}.")
 
 
-def system_prompt(speech=False, text=""):
+def phrase_block(phrases):
+    """The optional phrase-suggestion section of the review prompt; empty when no phrase is up for suggestion."""
+    if not phrases:
+        return ""
+    listed = "\n".join(f'- {e["id"]}: "{e["phrase"]}" ({e["meaning"]})' for e in phrases)
+    return ("\n\nPHRASE SUGGESTION (optional and rare): the expressions below are natural in English chat between colleagues. Report one in "
+            '"phrases" only if the message contains plain wording that a native colleague would naturally say with that expression, as '
+            '{"id":"<id>","original":"<the exact words of the message it would replace, copied verbatim>"}. At most one. Most messages get none: '
+            "never force a fit, never pick one the message already uses, and never for text in code or quotes. A phrase is no correction: "
+            "do not mention it in \"fixes\".\n" + listed)
+
+
+def system_prompt(speech=False, text="", phrases=()):
     n = NATIVE
     who = f"a non-native English speaker (native language: {n})" if n else "a non-native English speaker"
     transfer = (f"{n} transfer errors (false friends, literal calques, prepositions or verb patterns copied from {n}); " if n else "")
@@ -133,7 +148,7 @@ def system_prompt(speech=False, text=""):
                     'mishearing), whatever its grammar; otherwise false\n') if speech else ""
     speech_rules = ("SPEECH MODE: this text was produced by speech recognition, the user dictated it. Ignore likely mis-transcriptions "
                     "(homophones and sound-alikes such as their/there/they're or weather/whether, misheard or split words), missing or odd "
-                    "punctuation and capitalization, filler words, false starts and run-on sentences. Judge only the grammar and word choice "
+                    "punctuation and capitalization, filler words, false starts and run-on sentences. The tool also removes spoken pauses, so a topic named first and then a question or comment about it (\"What you are doing right now, is this in line with the plan?\", \"The retry logic, do we keep it?\"), a restart or an afterthought is ordinary spoken syntax: never flag its word order or a pronoun that picks the topic up again. Judge only the grammar and word choice "
                     "the speaker produced, never register or formality. If a phrase makes little sense, first check whether a similar-sounding phrase would make it a sensible sentence (\"to define\" for \"still fine\"): that is a transcription error, never flag it. Never set \"careless\".\n\n" if speech else "")
     hint = false_friend_hint(n, text)
     return f"""You are an English writing coach inside a coding tool. The user is {who} who talks to a coding assistant in English, in informal, task-focused messages, and wants to improve the language. Feedback is shown as a small dim note, so a pedantic or wrong correction costs more than a missed one.
@@ -148,7 +163,7 @@ Before emitting a fix, drop it unless: a native editor would mark the original a
 CARELESS FLAG: set "careless" true only if the message was clearly dashed off without any care for language (many typos, missing capitalization and punctuation, broken fragments, swearing, frustration). A message that is capitalized and punctuated, or that contains deliberate or playful mistakes, is NOT careless. Always list the fixes you find regardless of this flag: the caller decides whether to show them.
 
 {speech_rules}Output ONLY one raw JSON object, no fences:
-{{"careless":false,"fixes":[{{"original":"","fix":"","category":"","transfer":false,"severity":"error"{unclear_field},"explanation":""}}],"did_well":[]}}
+{{"careless":false,"fixes":[{{"original":"","fix":"","category":"","transfer":false,"severity":"error"{unclear_field},"explanation":""}}],"did_well":[],"phrases":[]}}
 - severity: "error" when a native editor would mark the original as wrong; "style" when it is correct but a native would clearly say it another way (a collocation or construction that is valid yet unnatural, or a redundancy). At most ONE style item per message, and only when the better wording is clearly more natural. Register, formality, politeness and word rarity are never style items.
 {unclear_spec}- original: exact substring copied verbatim from the message, only the few words with the error
 - fix: the single corrected replacement: the smallest change that reads naturally. Keep the user's concise chat style: never add back dropped subjects or other elements, and prefer the short wording a native would use in chat over a formal, wordy construction
@@ -158,7 +173,7 @@ CARELESS FLAG: set "careless" true only if the message was clearly dashed off wi
 - at most 3 fixes, most valuable first; clean message: {{"fixes":[],"did_well":[...]}}
 - did_well: categories (same list) in which the message used a non-trivial construction correctly; empty if unsure
 
-{CATEGORY_GUIDE}{hint}"""
+{CATEGORY_GUIDE}{hint}{phrase_block(phrases)}"""
 
 
 def db():
@@ -214,10 +229,22 @@ def improved(c):
     return out
 
 
+# A line that is only a timestamp of a chat export: "20m ago", "3 hours ago", "14:32", "Yesterday at 3 PM", "Today at 14:32".
+CHAT_STAMP = re.compile(r"^\s*(?:\d+\s*(?:s|secs?|seconds?|m|mins?|minutes?|h|hrs?|hours?|d|days?|w|wks?|weeks?)\s+ago"
+                        r"|(?:(?:today|yesterday)\s+(?:at\s+)?)?\d{1,2}:\d{2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?"
+                        r"|(?:today|yesterday)(?:\s+at\s+\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\.?)?)?)\s*$", re.I)
+
+
+def looks_pasted(prompt):
+    """A message that contains a pasted chat: two or more lines that are only a timestamp, as chat exports and copied threads
+    have. Those words are other people's (or older), so the message is not reviewed at all."""
+    return sum(1 for line in prompt.splitlines() if CHAT_STAMP.match(line)) >= 2
+
+
 def coachable(prompt):
     words = len(re.findall(r"\w+", prompt))
     return (words >= MIN_WORDS and len(prompt) <= MAX_CHARS and not prompt.startswith(("/", "!", "~"))
-            and not ENGINE_FRAMED.match(prompt))
+            and not ENGINE_FRAMED.match(prompt) and not looks_pasted(prompt))
 
 
 def setup_hint(c):
@@ -428,7 +455,7 @@ def validate(answer, prompt, recent=(frozenset(), frozenset()), speech=False, co
 
 def build_system(c, speech=False, text=""):
     top = [k for k, _ in sorted(recurrence(c).items(), key=lambda kv: -kv[1])[:3]]
-    return (system_prompt(speech, text) + (f"\nPay slightly more attention to this learner's recurring areas: {', '.join(top)}." if top else "")
+    return (system_prompt(speech, text, phrase_candidates(c, text)) + (f"\nPay slightly more attention to this learner's recurring areas: {', '.join(top)}." if top else "")
             + watch_prompt(c))
 
 
@@ -537,8 +564,9 @@ FUNCTION_WORDS = SUBJECT_AUX | {"me", "him", "her", "us", "them", "a", "an", "th
 
 
 def is_small_word_slip(original, fix, speech):
-    """One small word added or dropped (typed: only subject pronouns and auxiliaries, whose omission is haste; dictated: any
-    small word, also swapped for another, since those are the typical recognition errors). A performance slip, not a gap."""
+    """One small word missing from the text (typed: only subject pronouns and auxiliaries, whose omission is haste; dictated: any
+    small word, since recognizers drop weak words). A performance slip, not a gap. In dictated text a word the speaker added, or
+    swapped for one that does not sound alike, is their own wording and stays an error."""
     a, b = _words(original), _words(fix)
     ops = [o for o in difflib.SequenceMatcher(None, a, b).get_opcodes() if o[0] != "equal"]
     if len(ops) != 1:
@@ -546,11 +574,12 @@ def is_small_word_slip(original, fix, speech):
     tag, i1, i2, j1, j2 = ops[0]
     removed, added = a[i1:i2], b[j1:j2]
     words = FUNCTION_WORDS if speech else SUBJECT_AUX
-    if tag == "insert":
+    if tag == "insert":                                    # the fix adds a word that is missing from the text
         return len(added) == 1 and added[0] in words
-    if tag == "delete":
-        return len(removed) == 1 and removed[0] in words
-    return tag == "replace" and speech and len(removed) == 1 and len(added) == 1 and removed[0] in words and added[0] in words
+    if tag == "delete":                                    # the text has a word the fix removes
+        return len(removed) == 1 and removed[0] in words and not speech
+    return (tag == "replace" and speech and len(removed) == 1 and len(added) == 1 and removed[0] in words and added[0] in words
+            and sounds_alike(removed[0], added[0]))
 
 
 def classify_slips(c, fixes, speech):
@@ -601,14 +630,92 @@ def sloppy_form(prompt):
     return first.islower() or not text.endswith((".", "!", "?", "…", ")", '"'))
 
 
+PHRASE_AFTER = (0, 1, 3, 7, 7)   # fitting occasions to let pass before the next showing, by how often the phrase was shown
+PHRASE_SHOWINGS = 5               # a phrase retires after this many showings
+PHRASE_USES = 2                   # ... or after the user used it this many times by themselves
+PHRASE_GAP = 4                    # messages between two suggestions
+PHRASE_OFFERED = 8                # phrases the reviewer is asked about per message
+
+
+def phrase_list():
+    try:
+        return json.loads((Path(__file__).resolve().parent.parent / "data" / "phrases.json").read_text())
+    except Exception:
+        return []
+
+
+def _phrase_in(entry, text):
+    return bool(re.search(r"\b(?:" + (entry.get("pattern") or re.escape(entry["phrase"])) + r")\b", text, re.I))
+
+
+def phrase_status(c):
+    return {r[0]: r for r in c.execute("SELECT id, shown, skipped, uses, status, last_shown FROM phrases")}
+
+
+def phrase_candidates(c, text):
+    """A random handful of phrases still up for suggestion, minus the ones the message already uses. Which of them fit is
+    the reviewer's call; the schedule below decides whether a fit is shown."""
+    state = phrase_status(c)
+    open_ = [e for e in phrase_list() if state.get(e["id"], (0, 0, 0, 0, "active"))[4] == "active" and not _phrase_in(e, text)]
+    forced = [e for e in open_ if e["id"] in os.environ.get("ENGLISH_COACH_OFFER", "").split(",")]   # for the eval: make sure these are asked about
+    rest = [e for e in open_ if e not in forced]
+    return forced + random.sample(rest, min(max(0, PHRASE_OFFERED - len(forced)), len(rest)))
+
+
+def note_phrase_uses(c, text):
+    """Count the phrases the user wrote by themselves; after PHRASE_USES such messages a phrase counts as learned."""
+    state = phrase_status(c)
+    for e in phrase_list():
+        if _phrase_in(e, text):
+            row = state.get(e["id"], (e["id"], 0, 0, 0, "active", None))
+            uses = row[3] + 1
+            status = "learned" if row[4] == "active" and uses >= PHRASE_USES else row[4]
+            c.execute("INSERT INTO phrases(id, shown, skipped, uses, status, last_shown) VALUES(?,?,?,?,?,?) "
+                      "ON CONFLICT(id) DO UPDATE SET uses=excluded.uses, status=excluded.status", (e["id"], row[1], row[2], uses, status, row[5]))
+
+
+def pick_phrase(c, prompt, answer, prompt_id, fixes):
+    """The one phrase suggestion to show for this message, or None. The reviewer says which phrases fit; each fit is an
+    occasion. A phrase is shown on its first occasion, then after 1, 3, 7 and 7 occasions let pass, never by calendar, and retires after
+    PHRASE_SHOWINGS showings. Messages with a correction on the same words, quoted text, or too soon after the last suggestion get none."""
+    entries = {e["id"]: e for e in phrase_list()}
+    low, quoted = prompt.lower(), [m.span() for m in QUOTED.finditer(prompt)]
+    reported = answer.get("phrases") if isinstance(answer.get("phrases"), list) else []
+    if get_state(c, "last_phrase_prompt", 0) and prompt_id - get_state(c, "last_phrase_prompt", 0) < PHRASE_GAP:
+        return None
+    state = phrase_status(c)
+    for item in reported:
+        entry = entries.get(item.get("id")) if isinstance(item, dict) else None
+        original = clean(item.get("original"), 120) if entry else ""
+        if not entry or not original or state.get(entry["id"], (0, 0, 0, 0, "active"))[4] != "active" or _phrase_in(entry, prompt):
+            continue
+        a = low.find(original.lower())
+        b = a + len(original)
+        if a == -1 or any(qs <= a and b <= qe for qs, qe in quoted) or any(f[2].lower() in low and a < low.find(f[2].lower()) + len(f[2]) and low.find(f[2].lower()) < b for f in fixes):
+            continue
+        _, shown, skipped, uses, status, _last = state.get(entry["id"], (entry["id"], 0, 0, 0, "active", None))
+        if skipped < PHRASE_AFTER[min(shown, len(PHRASE_AFTER) - 1)]:   # a fitting occasion that is let pass
+            c.execute("INSERT INTO phrases(id, shown, skipped, uses, status) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET skipped=skipped+1",
+                      (entry["id"], shown, 1, uses, status))
+            continue
+        shown += 1
+        c.execute("INSERT INTO phrases(id, shown, skipped, uses, status, last_shown) VALUES(?,?,?,?,?,?) "
+                  "ON CONFLICT(id) DO UPDATE SET shown=excluded.shown, skipped=0, status=excluded.status, last_shown=excluded.last_shown",
+                  (entry["id"], shown, 0, uses, "retired" if shown >= PHRASE_SHOWINGS else "active", time.time()))
+        set_state(c, "last_phrase_prompt", prompt_id)
+        set_state(c, "last_phrase_id", entry["id"])
+        return {"id": entry["id"], "phrase": entry["phrase"], "meaning": entry["meaning"], "example": entry["example"], "original": original}
+    return None
+
+
 def store_answer(c, prompt, answer, mode="written", context=""):
     """Validate and store a review. Returns (careless, [(category, transfer, original, fix, explanation, severity)],
-    {"reminders": {lower original: text}, "milestone": text or None})."""
+    {"reminders": {lower original: text}, "milestone": text or None, "phrase": suggestion or None})."""
     now = time.time()
     if mode == "written" and answer.get("careless") is True and sloppy_form(prompt):   # sloppy mode: no tips, excluded from all statistics
         set_state(c, "last_careless", now)
         c.commit()
-        return True, [], {"reminders": {}, "milestone": None}
+        return True, [], {"reminders": {}, "milestone": None, "phrase": None}
     well = [x for x in answer.get("did_well", []) if x in CATEGORIES]
     spans = sentence_spans(prompt)
     pid = c.execute("INSERT INTO prompts(ts, words, did_well, mode, sentences) VALUES(?,?,?,?,?)",
@@ -620,8 +727,10 @@ def store_answer(c, prompt, answer, mode="written", context=""):
         c.execute("INSERT INTO findings(prompt_id, ts, category, transfer, original, fix, explanation, shown, mode, severity, sent_idx) "
                   "VALUES(?,?,?,?,?,?,?,1,?,?,?)", (pid, now, cat, tr, orig, fix, expl, mode, severity, sentence_index(spans, prompt, orig)))
     reminders, milestone = update_habits(c, prompt, [(o, f, e) for _, _, o, f, e, sev in fixes if sev in ("error", "slip")])
+    note_phrase_uses(c, prompt)
+    phrase = pick_phrase(c, prompt, answer, pid, fixes)
     c.commit()
-    return False, fixes, {"reminders": reminders, "milestone": milestone}
+    return False, fixes, {"reminders": reminders, "milestone": milestone, "phrase": phrase}
 
 
 def prepare_cmd():
@@ -690,10 +799,53 @@ def ingest_cmd():
     hint = setup_hint(c)
     c.commit()
     icon = CFG["icon_dictated" if mode == "dictated" else "icon_written"] or DEFAULTS["icon_dictated" if mode == "dictated" else "icon_written"]
-    print(json.dumps({"ok": True, "careless": careless, "btw": btw, "hint": hint, "icon": icon,
+    print(json.dumps({"ok": True, "careless": careless, "btw": btw, "hint": hint, "icon": icon, "phrase": extras["phrase"],
                       "fixes": [{"category": cat, "transfer": bool(tr), "original": o, "fix": f, "explanation": e, "severity": sev,
-                                "reminder": extras["reminders"].get(o.lower())}
+                                "reminder": extras["reminders"].get(o.lower()), "parts": diff_parts(o, f)}
                                 for cat, tr, o, f, e, sev in fixes]}))
+
+
+def diff_parts(original, fix, context=2):
+    """The correction as word segments for display: {"original": [[text, changed], ...], "fix": [...]}. Words that did not change
+    stay, up to `context` of them on each side of a change ("…" for the rest), so a long fragment with a one-word fix shows
+    that word and its neighbours, and only the changed words are coloured."""
+    a, b = original.split(), fix.split()
+    norm = lambda t: re.sub(r"[^\w']+", "", t.lower())
+    ops = [o for o in difflib.SequenceMatcher(None, [norm(t) for t in a], [norm(t) for t in b], autojunk=False).get_opcodes() if o[0] != "equal"]
+
+    def side(tokens, which):
+        changed, near = [False] * len(tokens), [False] * len(tokens)
+        for tag, i1, i2, j1, j2 in ops:
+            lo, hi = (i1, i2) if which == 0 else (j1, j2)
+            for k in range(lo, hi):
+                changed[k] = True
+            for k in range(max(0, lo - context), min(len(tokens), hi + context)):   # also around a pure insertion or deletion
+                near[k] = True
+        if not any(near):
+            return [[" ".join(tokens), True]]
+        parts, run, gap = [], [], False
+        for k, token in enumerate(tokens):
+            if not near[k]:
+                gap = True
+                continue
+            if gap and (run or parts):
+                if run:
+                    parts.append([" ".join(run), run_changed]); run = []
+                parts.append(["…", False])
+            elif gap:
+                parts.append(["…", False])
+            gap = False
+            if run and changed[k] != run_changed:
+                parts.append([" ".join(run), run_changed]); run = []
+            run_changed = changed[k] if not run else run_changed
+            run.append(token)
+        if run:
+            parts.append([" ".join(run), run_changed])
+        if gap:
+            parts.append(["…", False])
+        return parts
+
+    return {"original": side(a, 0), "fix": side(b, 1)}
 
 
 def core_change(original, fix):
@@ -1125,6 +1277,37 @@ def watch_cmd(args):
     print("\nChange with: watch add <wrong> <right> [note]   watch remove <wrong>")
 
 
+def phrases_cmd(args):
+    """phrases: what was suggested so far. phrases ignore|unignore <id|last>: never suggest this one again (or take it back)."""
+    c = db()
+    entries = {e["id"]: e for e in phrase_list()}
+    if args and args[0] in ("ignore", "unignore"):
+        want = (" ".join(args[1:]) or "last").strip().lower()
+        if want == "last":
+            want = c.execute("SELECT value FROM state WHERE key='last_phrase_id'").fetchone()
+            want = want[0] if want else ""
+        entry = entries.get(want) or next((e for e in entries.values() if want and want in e["phrase"].lower()), None)
+        if entry is None:
+            print("No such phrase. Run `phrases` to see the ids.")
+            return
+        row = phrase_status(c).get(entry["id"], (entry["id"], 0, 0, 0, "active", None))
+        status = "ignored" if args[0] == "ignore" else ("retired" if row[1] >= PHRASE_SHOWINGS else "active")
+        c.execute("INSERT INTO phrases(id, shown, skipped, uses, status, last_shown) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status",
+                  (entry["id"], row[1], row[2], row[3], status, row[5]))
+        c.commit()
+        print(f'"{entry["phrase"]}" will {"not be suggested again" if status == "ignored" else "be suggested again"}.')
+        return
+    state = phrase_status(c)
+    rows = sorted((r for r in state.values() if r[1] or r[3] or r[4] != "active"), key=lambda r: -(r[5] or 0))
+    if not rows:
+        print("No phrase has been suggested yet. They appear now and then, when one fits what you wrote.")
+        return
+    for pid, shown, skipped, uses, status, last in rows:
+        e = entries.get(pid)
+        if e:
+            print(f'{pid:22} "{e["phrase"]}"  shown {shown}x, used by you {uses}x, {status}')
+
+
 def _as_text(content):
     if isinstance(content, str):
         return content
@@ -1287,6 +1470,8 @@ if __name__ == "__main__":
             backfill_cmd(rest)
         elif cmd == "watch":
             watch_cmd(rest)
+        elif cmd == "phrases":
+            phrases_cmd(rest)
         elif cmd == "overview":
             overview_cmd(rest)
         elif cmd == "recent":

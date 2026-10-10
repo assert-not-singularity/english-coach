@@ -118,9 +118,9 @@ const review = async ($: EngineInterface, prepared: Prepared, shown: string, con
     )
     if (!result.ok) return
     if (result.hint) $.ui.toast(result.hint)
-    if (result.careless || (result.fixes.length === 0 && !result.btw)) return
+    if (result.careless || (result.fixes.length === 0 && !result.btw && !result.phrase)) return
 
-    const entry: Review = { fixes: result.fixes as Fix[], btw: result.btw ?? null, icon: result.icon ?? '✎' }
+    const entry: Review = { fixes: result.fixes as Fix[], phrase: result.phrase ?? null, btw: result.btw ?? null, icon: result.icon ?? '✎' }
     await update($, reviews, held => Object.fromEntries(Object.entries({ ...held, [textKey(shown)]: entry }).slice(-KEEP)))
   } catch (error) {
     $.ui.toast(`english-coach: review failed (${String(error).slice(0, 80)})`)
@@ -167,6 +167,13 @@ export const register: Register = on => {
 
     const { Box, Text } = $.ui.resolve(e)
     const mark = `${held.icon} ` // configurable: one icon for typed text, one for dictated text
+    // The correction as word segments: the changed words are coloured, their neighbours stay quiet, and long stretches shrink to "…".
+    const pieces = (segments: [string, boolean][], color: 'error' | 'success') =>
+      segments.map(([text, changed], index) => (
+        <Text key={`piece-${index}`} color={changed ? color : undefined} dimColor={!changed} bold={changed && color === 'success'}>
+          {(index > 0 ? ' ' : '') + text}
+        </Text>
+      ))
 
     return (
       <Box flexDirection="column">
@@ -178,11 +185,15 @@ export const register: Register = on => {
                 <Text dimColor>{mark}</Text>
                 {fix.severity === 'style' ? (
                   <Text dimColor>{`${fix.original} → ${fix.fix}  style, not an error`}</Text>
+                ) : fix.parts ? (
+                  pieces(fix.parts.original, 'error')
                 ) : (
                   <Text color="error">{fix.original}</Text>
                 )}
                 {fix.severity === 'style' ? null : <Text dimColor>{' → '}</Text>}
-                {fix.severity === 'style' ? null : (
+                {fix.severity === 'style' ? null : fix.parts ? (
+                  pieces(fix.parts.fix, 'success')
+                ) : (
                   <Text color="success" bold>
                     {fix.fix}
                   </Text>
@@ -201,6 +212,20 @@ export const register: Register = on => {
               ) : null}
             </Box>
           ))}
+          {held.phrase === null ? null : (
+            <Box flexDirection="column">
+              <Text wrap="wrap">
+                <Text color="suggestion">{'✦ '}</Text>
+                <Text color="suggestion" bold>
+                  {held.phrase.phrase}
+                </Text>
+                <Text dimColor>{`  ${held.phrase.meaning}`}</Text>
+              </Text>
+              <Text dimColor italic wrap="wrap">
+                {`  where you wrote "${held.phrase.original}", for example: ${held.phrase.example}`}
+              </Text>
+            </Box>
+          )}
           {held.btw === null ? null : (
             <Text dimColor wrap="wrap">
               {`${held.icon} ${held.btw}`}

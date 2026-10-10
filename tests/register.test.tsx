@@ -17,6 +17,7 @@ const INGESTED = JSON.stringify({
       fix: 'explain to me',
       explanation: "'Explain' takes 'to' before the person.",
       severity: 'error',
+      parts: { original: [['Can you', false], ['explain me', true], ['why this', false]], fix: [['Can you', false], ['explain to me', true], ['why this', false]] },
     },
   ],
 })
@@ -220,6 +221,20 @@ describe('inline fixes', () => {
 
     const ui = await drawnWith($, clock, PROMPT, /keeps coming back/)
     expect(ui).toBeDefined()
+    await ui!.unmount()
+  })
+
+  test('a phrase suggestion is drawn on its own when the message has no correction', async ($, on) => {
+    const suggested = JSON.stringify({
+      ok: true, careless: false, btw: null, hint: null, fixes: [],
+      phrase: { id: 'cut-to-the-chase', phrase: 'cut to the chase', meaning: 'get to the main point', example: "Let's cut to the chase.", original: 'get to the point quickly' },
+    })
+    const { clock } = world(on, suggested)
+    await submit($, PROMPT)
+
+    const ui = await drawnWith($, clock, PROMPT, /cut to the chase/)
+    expect(ui).toBeDefined()
+    expect(await ui!.find({ text: /get to the point quickly/ })).toBeDefined()
     await ui!.unmount()
   })
 

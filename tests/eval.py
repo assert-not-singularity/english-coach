@@ -20,13 +20,13 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_SCRIPT = HERE.parent / "scripts" / "english-coach.py"
 
 
-def run_once(script, text, lang, seed=(), context="", model="haiku", no_escalation=False):
+def run_once(script, text, lang, seed=(), context="", model="haiku", no_escalation=False, offer=()):
     with tempfile.TemporaryDirectory() as tmp:
         cfg, data = Path(tmp) / "cfg", Path(tmp) / "data"
         cfg.mkdir()
         (cfg / "config.json").write_text(json.dumps({"native_language": lang or None, "min_words": 1,
                                                      "max_tips": 3, "dictation_marker": "[dictated]"}))
-        env = dict(os.environ, ENGLISH_COACH_DIR=str(data), ENGLISH_COACH_CONFIG_DIR=str(cfg))
+        env = dict(os.environ, ENGLISH_COACH_DIR=str(data), ENGLISH_COACH_CONFIG_DIR=str(cfg), ENGLISH_COACH_OFFER=",".join(offer))
         if seed:   # corrections made "just before": create the schema, then insert them as shown tips
             subprocess.run([sys.executable, "-I", str(script), "report"], env=env, capture_output=True, timeout=60)
             c = sqlite3.connect(data / "log.db")
@@ -41,6 +41,8 @@ def run_once(script, text, lang, seed=(), context="", model="haiku", no_escalati
 
         escalated = False
         prep = json.loads(step("prepare", stdin=json.dumps({"prompt": text})) or "{}")
+        if not prep.get("coach"):   # not reviewed at all (too short, pasted chat, ...): nothing stored
+            return {"careless": False, "findings": [], "error": None, "escalated": False, "phrase": None, "coached": False}
         if prep.get("coach"):
             def review(m, suffix=""):
                 return subprocess.run(["claude", "-p", "--model", m, "--no-session-persistence", "--tools", "",
@@ -54,14 +56,17 @@ def run_once(script, text, lang, seed=(), context="", model="haiku", no_escalati
             if decision.get("escalate") and not no_escalation:
                 escalated = True
                 payload["reply"] = review(decision["model"], decision.get("note", ""))
-            step("ingest", stdin=json.dumps(payload))
+            try:
+                phrase = (json.loads(step("ingest", stdin=json.dumps(payload)) or "{}").get("phrase") or {}).get("id")
+            except ValueError:
+                phrase = None
         db = data / "log.db"
         if not db.exists():
-            return {"careless": False, "findings": [], "error": "no database (review failed)", "escalated": escalated}
+            return {"careless": False, "findings": [], "error": "no database (review failed)", "escalated": escalated, "phrase": None, "coached": True}
         c = sqlite3.connect(db)
         careless = c.execute("SELECT 1 FROM state WHERE key='last_careless'").fetchone() is not None
         findings = c.execute("SELECT original, fix, category, severity FROM findings WHERE prompt_id != 0").fetchall()   # 0 = seeded history
-        return {"careless": careless, "findings": findings, "error": None, "escalated": escalated}
+        return {"careless": careless, "findings": findings, "error": None, "escalated": escalated, "phrase": phrase, "coached": True}
 
 
 def check(case, out):
@@ -79,6 +84,12 @@ def check(case, out):
         problems.append("unexpected style item: " + "; ".join(f"{o} -> {f}" for o, f, _ in styles))
     if len(styles) > 1:
         problems.append("more than one style item")
+    if case.get("no_review") and out.get("coached", True):
+        problems.append("a pasted chat was reviewed")
+    if case.get("expect_phrase") and out.get("phrase") != case["expect_phrase"]:
+        problems.append(f"phrase {out.get('phrase')} (expected {case['expect_phrase']})")
+    if case.get("no_phrase") and out.get("phrase"):
+        problems.append(f"unexpected phrase {out['phrase']}")
     for want in case.get("flag", []):
         if not any(want.lower() in o.lower() for o, _, _ in found):
             problems.append(f"missed '{want}'")
@@ -108,7 +119,7 @@ def main():
 
     jobs = [(s, c, i) for s in scripts for c in cases for i in range(args.runs)]
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        outs = list(pool.map(lambda j: run_once(j[0][1], j[1]["text"], args.lang, j[1].get("seed", ()), j[1].get("context", ""), args.model, args.no_escalation), jobs))
+        outs = list(pool.map(lambda j: run_once(j[0][1], j[1]["text"], args.lang, j[1].get("seed", ()), j[1].get("context", ""), args.model, args.no_escalation, j[1].get("offer", ())), jobs))
 
     results, escalations = {}, {}   # (label, case id) -> list of problem lists / number of escalated runs
     for (s, c, _), out in zip(jobs, outs):

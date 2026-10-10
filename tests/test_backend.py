@@ -324,7 +324,11 @@ class Slips(Workspace):
         self.assertFalse(slip("explain me", "explain to me", speech=False))              # a missing preposition is a gap when typed
         self.assertFalse(slip("does the models", "do the models", speech=False))         # a swap is not an omission when typed
         self.assertTrue(slip("explain me", "explain to me", speech=True))                # in dictation any small word may be misheard
-        self.assertTrue(slip("does the models", "do the models", speech=True))
+        self.assertFalse(slip("does the models", "do the models", speech=True))         # a swap that does not sound alike is the speaker's
+        self.assertTrue(slip("0.5 is phrase suggestions", "0.5 is for phrase suggestions", speech=True))   # a word missing from the transcript
+        self.assertFalse(slip("should have been looked", "should have looked", speech=True))   # an extra word is the speaker's own
+        self.assertFalse(slip("wondering that", "wondering if", speech=True))
+        self.assertTrue(slip("I have a", "I have an", speech=True) is False)             # not a missing word
         self.assertFalse(slip("informations", "information", speech=True))              # not a small word
         self.assertFalse(slip("defer this", "derive this", speech=False))
 
@@ -353,10 +357,16 @@ class Slips(Workspace):
         out = self.ingest("Can you explain me why this fails, please?", [self.fix("explain me", "explain to me", category="preposition")])
         self.assertEqual([f["severity"] for f in out["fixes"]], ["error"])
 
-    def test_dictated_small_word_changes_are_slips(self):
-        out = self.ingest("Then the people call them taste, honestly.", [self.fix("call them taste", "call it taste")], mode="dictated")
+    def test_a_small_word_missing_from_dictated_text_is_a_slip(self):
+        out = self.ingest("Then the point zero five is phrase suggestions, honestly.", [self.fix("is phrase suggestions", "is for phrase suggestions")], mode="dictated")
         self.assertEqual(out["fixes"], [])
         self.assertEqual(self.findings()[0][3], "slip")
+
+    def test_an_extra_or_unlike_small_word_in_dictated_text_stays_an_error(self):
+        out = self.ingest("Then how it should have been looked is not clear to me.", [self.fix("should have been looked", "should have looked")], mode="dictated")
+        self.assertEqual([f["severity"] for f in out["fixes"]], ["error"])
+        out = self.ingest("I am just wondering that this is possible at all.", [self.fix("wondering that", "wondering if")], mode="dictated")
+        self.assertEqual([f["severity"] for f in out["fixes"]], ["error"])
 
 
 class Overview(Workspace):
@@ -575,3 +585,202 @@ class Summaries(Workspace):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Phrases(Workspace):
+    """Native-phrase suggestions: the reviewer says what fits, the schedule decides what is shown."""
+
+    def say(self, prompt, phrases, fixes=(), mode="written"):
+        reply = json.dumps({"careless": False, "fixes": list(fixes), "did_well": [], "phrases": phrases})
+        return json.loads(self.cli("ingest", stdin=json.dumps({"prompt": prompt, "mode": mode, "reply": reply, "context": ""})))
+
+    def filler(self, n=4):
+        for i in range(n):
+            self.say(f"Please look at the file number {i} again.", [])
+
+    def row(self, pid):
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            return c.execute("SELECT shown, skipped, uses, status FROM phrases WHERE id=?", (pid,)).fetchone()
+
+    CHASE = [{"id": "cut-to-the-chase", "original": "get to the point quickly"}]
+
+    def test_first_fitting_occasion_is_shown(self):
+        out = self.say("Let us get to the point quickly and fix the build.", self.CHASE)
+        self.assertEqual(out["phrase"]["phrase"], "cut to the chase")
+        self.assertEqual(out["phrase"]["original"], "get to the point quickly")
+        self.assertIn("example", out["phrase"])
+        self.assertEqual(self.row("cut-to-the-chase")[:2], (1, 0))
+
+    def test_a_phrase_is_never_a_finding(self):
+        self.say("Let us get to the point quickly and fix the build.", self.CHASE)
+        self.assertEqual(self.findings(), [])
+
+    def test_unknown_missing_or_unmatched_suggestions_are_dropped(self):
+        for bad in ([{"id": "no-such-phrase", "original": "the build"}],
+                    [{"id": "cut-to-the-chase", "original": "words that are not there"}],
+                    [{"id": "cut-to-the-chase"}], ["cut-to-the-chase"], "cut-to-the-chase"):
+            self.assertIsNone(self.say("Let us get to the point quickly and fix the build.", bad)["phrase"])
+
+    def test_quoted_text_gets_no_suggestion(self):
+        out = self.say('He wrote "get to the point quickly" in the ticket and I agree.', self.CHASE)
+        self.assertIsNone(out["phrase"])
+
+    def test_a_message_that_already_uses_the_phrase_gets_none_and_counts_a_use(self):
+        out = self.say("Let me cut to the chase and fix the build now.", self.CHASE)
+        self.assertIsNone(out["phrase"])
+        self.assertEqual(self.row("cut-to-the-chase")[2], 1)
+
+    def test_two_uses_retire_it_for_good(self):
+        self.say("Let me cut to the chase and fix the build now.", [])
+        self.say("Okay, to cut to the chase again: the cache is the problem.", [])
+        self.assertEqual(self.row("cut-to-the-chase")[3], "learned")
+        self.filler()
+        self.assertIsNone(self.say("Let us get to the point quickly and fix the build.", self.CHASE)["phrase"])
+
+    def test_inflected_use_is_recognized(self):
+        self.say("He is cutting to the chase, finally, so the plan is clear.", [])
+        self.assertEqual(self.row("cut-to-the-chase")[2], 1)
+
+    def test_not_again_right_after_a_suggestion(self):
+        self.say("Let us get to the point quickly and fix the build.", self.CHASE)
+        again = self.say("We should rule out the network, then fix the build.", [{"id": "rule-out", "original": "rule out"}])
+        self.assertIsNone(again["phrase"])
+        self.assertEqual(self.row("rule-out")[:2], (0, 0))   # too soon: not shown and not counted as an occasion
+
+    def test_schedule_lets_occasions_pass_before_the_next_showing(self):
+        self.say("Let us get to the point quickly and fix the build.", self.CHASE)          # shown 1x
+        self.filler()
+        self.assertIsNone(self.say("I want to get to the point quickly with this one.", self.CHASE)["phrase"])   # occasion 1 let pass
+        self.assertEqual(self.row("cut-to-the-chase")[:2], (1, 1))
+        self.filler()
+        self.assertIsNotNone(self.say("Again, get to the point quickly please, the plan is fine.", self.CHASE)["phrase"])   # shown 2x
+        self.assertEqual(self.row("cut-to-the-chase")[:2], (2, 0))
+        for _ in range(3):                                                                    # now three occasions pass first
+            self.filler()
+            self.assertIsNone(self.say("Please get to the point quickly in the next review.", self.CHASE)["phrase"])
+        self.filler()
+        self.assertIsNotNone(self.say("Once more, get to the point quickly in this section.", self.CHASE)["phrase"])
+        self.assertEqual(self.row("cut-to-the-chase")[0], 3)
+
+    def test_it_retires_after_five_showings(self):
+        self.say("Let us get to the point quickly and fix the build.", [])      # creates the schema
+        with closing(sqlite3.connect(self.data / "log.db")) as c:
+            c.execute("INSERT INTO phrases(id, shown, skipped, uses, status) VALUES('cut-to-the-chase', 4, 7, 0, 'active')")
+            c.commit()
+        self.filler()
+        self.assertIsNotNone(self.say("Let us get to the point quickly and fix the build.", self.CHASE)["phrase"])
+        self.assertEqual(self.row("cut-to-the-chase")[3], "retired")
+        self.filler()
+        self.assertIsNone(self.say("Let us get to the point quickly and fix the build.", self.CHASE)["phrase"])
+
+    def test_no_suggestion_on_words_that_carry_a_correction(self):
+        out = self.say("Let us get to the point quickly and fix the build.", self.CHASE,
+                       fixes=[self.fix("get to the point quickly", "get quickly to the point")])
+        self.assertIsNone(out["phrase"])
+
+    def test_careless_messages_get_none(self):
+        reply = json.dumps({"careless": True, "fixes": [], "did_well": [], "phrases": self.CHASE})
+        out = json.loads(self.cli("ingest", stdin=json.dumps({"prompt": "ok lets get to the point quickly and fix it", "mode": "written", "reply": reply})))
+        self.assertTrue(out["careless"])
+        self.assertIsNone(out.get("phrase"))
+
+    def test_spoken_messages_can_get_one(self):
+        self.assertIsNotNone(self.say("Let us get to the point quickly and fix the build.", self.CHASE, mode="dictated")["phrase"])
+
+    def test_ignore_last_and_unignore(self):
+        self.say("Let us get to the point quickly and fix the build.", self.CHASE)
+        self.assertIn("not be suggested again", self.cli("phrases", "ignore", "last"))
+        self.filler()
+        self.assertIsNone(self.say("Let us get to the point quickly and fix the build.", self.CHASE)["phrase"])
+        self.assertIn("be suggested again", self.cli("phrases", "unignore", "cut-to-the-chase"))
+        self.assertEqual(self.row("cut-to-the-chase")[3], "active")
+
+    def test_ignore_by_words_and_unknown(self):
+        self.assertIn("will not be suggested again", self.cli("phrases", "ignore", "rule out"))
+        self.assertEqual(self.row("rule-out")[3], "ignored")
+        self.assertIn("No such phrase", self.cli("phrases", "ignore", "no such thing"))
+
+    def test_list(self):
+        self.assertIn("No phrase has been suggested", self.cli("phrases"))
+        self.say("Let us get to the point quickly and fix the build.", self.CHASE)
+        self.assertIn("cut to the chase", self.cli("phrases"))
+
+    def test_prompt_offers_a_few_phrases_and_leaves_out_ones_already_used(self):
+        out = json.loads(self.cli("prepare", stdin=json.dumps({"prompt": "Let me cut to the chase and fix the build now, please."})))
+        self.assertIn("PHRASE SUGGESTION", out["system"])
+        offered = [line for line in out["system"].split("PHRASE SUGGESTION")[1].splitlines() if line.startswith("- ")]
+        self.assertLessEqual(len(offered), 8)
+        self.assertNotIn("cut-to-the-chase", out["system"])
+
+    def test_the_phrase_file_is_well_formed(self):
+        entries = json.loads((SCRIPT.parent.parent / "data" / "phrases.json").read_text())
+        self.assertGreaterEqual(len(entries), 30)
+        self.assertEqual(len({e["id"] for e in entries}), len(entries))
+        import re
+        for e in entries:
+            self.assertTrue({"id", "phrase", "meaning", "example"} <= set(e))
+            self.assertTrue(re.search(r"\b(?:" + e["pattern"] + r")\b", e["example"], re.I) or e["phrase"].split()[0] in e["example"].lower(), e["id"])
+
+
+class PastedChat(Workspace):
+    """A copied chat thread (names and timestamps on their own lines) is not the user's writing: no review at all."""
+
+    THREAD = ("maria\n12 minutes ago\nwe pick the colors, i draw the first sketch\n\n12m ago\n"
+              "i sent the file to your shared folder so you can check it later\n\nprint test result\n\nmaria\nnow\n"
+              "bought more paper since i will print now 300 pages approx")
+
+    def prepare(self, prompt):
+        return json.loads(self.cli("prepare", stdin=json.dumps({"prompt": prompt})))
+
+    def test_a_thread_with_timestamp_lines_is_not_reviewed(self):
+        self.assertFalse(self.prepare(self.THREAD)["coach"])
+
+    def test_other_timestamp_shapes(self):
+        for stamps in ("Yesterday at 3 PM\nsome text here\n14:32", "2 hours ago\nwords words\n3 days ago", "10:05\nokay then\n10:07"):
+            self.assertFalse(self.prepare("name\n" + stamps + "\nmore words to reach the minimum")["coach"], stamps)
+
+    def test_ago_inside_a_sentence_is_ordinary_text(self):
+        for text in ("I fixed that bug two days ago but the build still fails on the second step.",
+                     "It was merged 20 minutes ago, and then the pipeline ran at 14:32 again without any issue.",
+                     "Started 3 hours ago\nand it is still running on the old data, which is strange."):
+            self.assertTrue(self.prepare(text)["coach"], text)
+
+    def test_a_single_timestamp_line_does_not_count(self):
+        self.assertTrue(self.prepare("Please check the log from\n14:32\nbecause the deploy failed there, I think.")["coach"])
+
+
+class DiffParts(Workspace):
+    """The tip shows the changed words in colour and trims long unchanged stretches."""
+
+    def parts(self, a, b):
+        return self.ec.diff_parts(a, b)
+
+    def test_a_one_word_change_in_a_long_fragment_shows_only_neighbours(self):
+        p = self.parts("do not cut off by the ground truth chain length", "do not cut off at the ground truth chain length")
+        self.assertEqual([t for t, c in p["original"] if c], ["by"])
+        self.assertEqual([t for t, c in p["fix"] if c], ["at"])
+        self.assertEqual(p["original"][0], ["…", False])
+        self.assertIn(["cut off", False], p["original"])
+
+    def test_a_moved_word_is_marked_on_both_sides(self):
+        p = self.parts("this is what I requested actually from you", "this is what I actually requested from you")
+        self.assertEqual([t for t, c in p["original"] if c], ["actually"])
+        self.assertEqual([t for t, c in p["fix"] if c], ["actually"])
+
+    def test_an_inserted_word_is_marked_in_the_fix(self):
+        p = self.parts("explain me", "explain to me")
+        self.assertEqual([t for t, c in p["fix"] if c], ["to"])
+
+    def test_text_is_rebuilt_without_loss(self):
+        a, b = "I am since two hours trying", "I have been trying for two hours"
+        p = self.parts(a, b)
+        self.assertEqual(" ".join(t for t, _ in p["original"] if t != "…"), a)
+        self.assertEqual(" ".join(t for t, _ in p["fix"] if t != "…"), b)
+
+    def test_case_and_punctuation_alone_do_not_count_as_changes(self):
+        p = self.parts("Okay, so this fails", "okay so this fails again")
+        self.assertEqual([t for t, c in p["original"] if c], [])
+
+    def test_ingest_carries_the_parts(self):
+        out = self.ingest("Can you explain me why the build is failing, please?", [self.fix("explain me", "explain to me")])
+        self.assertEqual([t for t, c in out["fixes"][0]["parts"]["fix"] if c], ["to"])

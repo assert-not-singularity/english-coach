@@ -32,21 +32,24 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 - **Careless mode.** Messages that were clearly dashed off (many typos, fragments, swearing, and
   starting lowercase or without closing punctuation) get no tip and are excluded from the
   statistics. Start a message with `~` to skip analysis entirely.
+- **Pasted chats.** A message that contains a pasted chat thread (two or more lines that are only a timestamp, such as
+  `20m ago`, `3 hours ago`, `14:32` or `Yesterday at 3 PM`) is not reviewed at all, so other people's wording never reaches your
+  tips or statistics. Your own text in the same message is skipped with it; start with `~` or leave out the paste if you want it reviewed.
 - **Dictated messages.** If your speech-to-text tool can add a marker to what it types (for example
   `[dictated]`), set it with `config set dictation_marker "[dictated]"` or in `/english-coach:setup`.
   A message containing the marker, anywhere and in any case, is reviewed in speech mode: likely
   mis-transcriptions (homophones such as their/there/they're, weather/whether, now/no), missing
-  punctuation, filler words and run-ons are ignored, and only the grammar and word choice you
+  punctuation, filler words, run-ons and spoken restarts or topic-first questions ("The retry logic, do we keep it?") are ignored, and only the grammar and word choice you
   produced is judged. The marker is removed before Claude reads your message
   (`config set strip_marker off` keeps it). Dictated messages are counted apart from typed ones:
   the main report covers written text only, followed by a short dictated section. The coach only
   sees the transcript, so pronunciation and fluency are out of its reach.
-- **Slips.** A correction that only adds or drops one small word is a slip, not a gap in your English:
-  a forgotten "I" or "is" when typing, or any small word in dictated text, where those are the typical
-  recognition errors. Slips are stored and shown in `recent` and as one line in the report, but not drawn
-  under your message and not counted as errors. If the same omission happens again, it becomes an error
-  with the usual reminder, because a repeated omission points to a gap. A missing preposition or article in
-  typed text always stays an error.
+- **Slips.** A correction that only adds one small word that was missing is a slip, not a gap in your English: a
+  forgotten "I" or "is" when typing, or any small word missing from dictated text, since recognizers drop weak words. Slips are
+  stored and shown in `recent` and as one line in the report, but not drawn under your message and not counted as errors. If the
+  same omission happens again, it becomes an error with the usual reminder, because a repeated omission points to a gap. A missing
+  preposition or article in typed text always stays an error. In dictated text, a word you added or swapped for one that does not sound
+  alike ("should have been looked", "wondering that") is your own wording, so it is a normal error.
 - **Errors and style.** Each finding has a severity. An error is something a native editor would
   mark wrong. A style item is correct English that a native would word differently, for example a
   valid but unnatural collocation or a redundancy; there is at most one per message. Style items are
@@ -82,6 +85,15 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 - **Sentence counts for older messages.** Messages stored before sentence counting existed can be filled in once with
   `english-coach.py backfill` (`--dry-run` first). It reads your own Claude Code session logs on your machine,
   matches each message by time and word count, and writes back numbers only; no text is stored or printed.
+- **Phrase suggestions.** Now and then, when what you wrote has a plainer spot where a native colleague would
+  naturally use a set expression ("cut to the chase", "a rule of thumb", "to be on the safe side"), a line in the
+  accent color with a ✦ shows the phrase, its meaning, an example and the words it would replace. It is not a
+  correction and never counts as an error. The review model decides what fits from a handful of phrases per message
+  (`data/phrases.json`, about 50, the same for every native language). How often one appears depends on fitting
+  occasions, never the calendar: a phrase is shown on its first fitting occasion, then after 1, 3, 7 and 7 further fitting
+  occasions have passed, and it retires after five showings or once you used it twice yourself. At least four messages lie
+  between two suggestions, and a message with a correction on the same words gets none. `phrases` lists them and
+  `phrases ignore <id|last>` stops one for good.
 - **Forgetting a tip.** For an editing slip that was never a real mistake, `/english-coach:forget` deletes
   the latest tip without a trace. Unlike `dismiss`, the phrase can be flagged again later.
 - **Watchlist.** A mistake that is flagged again and again (counted per message, by the changed words,
@@ -109,6 +121,7 @@ a terminal, `python3 <plugin-dir>/scripts/english-coach.py setup` does the same 
 /english-coach:coach dismiss last     # ... every tip of the last message
 /english-coach:coach undismiss 12     # take it back
 /english-coach:forget          # delete the latest tip without a trace (also: message, or an id)
+/english-coach:coach phrases   # native phrases suggested so far; ignore <id|last> / unignore <id>
 /english-coach:coach watch     # mistakes that keep coming back; add <wrong> <right> [note] / remove <wrong>
 /english-coach:coach off       # pause
 /english-coach:coach on        # resume

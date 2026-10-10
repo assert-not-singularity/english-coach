@@ -1,0 +1,331 @@
+[
+ {
+  "id": "cut-to-the-chase",
+  "phrase": "cut to the chase",
+  "meaning": "get to the main point without more preamble",
+  "example": "Let's cut to the chase: the migration fails on step two.",
+  "pattern": "cut(s|ting)? to the chase"
+ },
+ {
+  "id": "same-page",
+  "phrase": "be on the same page",
+  "meaning": "understand and agree on things in the same way",
+  "example": "Before we start, I want us to be on the same page about the scope.",
+  "pattern": "on the same page"
+ },
+ {
+  "id": "rule-of-thumb",
+  "phrase": "a rule of thumb",
+  "meaning": "a rough guideline that works most of the time",
+  "example": "As a rule of thumb, keep functions under fifty lines.",
+  "pattern": "rules? of thumb"
+ },
+ {
+  "id": "long-run",
+  "phrase": "in the long run",
+  "meaning": "over a long period; eventually",
+  "example": "The simpler design pays off in the long run.",
+  "pattern": "in the long run"
+ },
+ {
+  "id": "grain-of-salt",
+  "phrase": "take it with a grain of salt",
+  "meaning": "do not trust it completely",
+  "example": "Take the benchmark with a grain of salt; it ran on a laptop.",
+  "pattern": "(a )?grain of salt"
+ },
+ {
+  "id": "for-the-time-being",
+  "phrase": "for the time being",
+  "meaning": "for now, until something changes",
+  "example": "For the time being, we keep the old endpoint.",
+  "pattern": "for the time being"
+ },
+ {
+  "id": "off-the-top",
+  "phrase": "off the top of my head",
+  "meaning": "from memory, without checking",
+  "example": "Off the top of my head, I think it was version three.",
+  "pattern": "off the top of (my|your|his|her|their) head"
+ },
+ {
+  "id": "safe-side",
+  "phrase": "to be on the safe side",
+  "meaning": "as a precaution",
+  "example": "I'll add a backup to be on the safe side.",
+  "pattern": "on the safe side"
+ },
+ {
+  "id": "square-one",
+  "phrase": "back to square one",
+  "meaning": "back at the beginning after a failed attempt",
+  "example": "The fix didn't work, so we're back to square one.",
+  "pattern": "square one"
+ },
+ {
+  "id": "bottom-line",
+  "phrase": "the bottom line",
+  "meaning": "the most important point once everything is considered",
+  "example": "The bottom line is that it costs twice as much.",
+  "pattern": "bottom line"
+ },
+ {
+  "id": "play-by-ear",
+  "phrase": "play it by ear",
+  "meaning": "decide as things develop instead of planning",
+  "example": "We don't have a schedule; let's play it by ear.",
+  "pattern": "play(s|ed|ing)? (it )?by ear"
+ },
+ {
+  "id": "ballpark",
+  "phrase": "a ballpark figure",
+  "meaning": "a rough estimate",
+  "example": "Can you give me a ballpark figure for the migration?",
+  "pattern": "ballpark"
+ },
+ {
+  "id": "no-brainer",
+  "phrase": "a no-brainer",
+  "meaning": "an obviously good decision",
+  "example": "Caching the result is a no-brainer.",
+  "pattern": "no[- ]brainers?"
+ },
+ {
+  "id": "last-resort",
+  "phrase": "as a last resort",
+  "meaning": "only if nothing else works",
+  "example": "As a last resort, we can rebuild the index.",
+  "pattern": "last resort"
+ },
+ {
+  "id": "by-and-large",
+  "phrase": "by and large",
+  "meaning": "in general, for the most part",
+  "example": "By and large, the tests are stable.",
+  "pattern": "by and large"
+ },
+ {
+  "id": "end-of-the-day",
+  "phrase": "at the end of the day",
+  "meaning": "when everything is considered",
+  "example": "At the end of the day, users only care that it works.",
+  "pattern": "end of the day"
+ },
+ {
+  "id": "come-to-think",
+  "phrase": "come to think of it",
+  "meaning": "a thought that only occurs to you now",
+  "example": "Come to think of it, we never tested the empty case.",
+  "pattern": "come to think of it"
+ },
+ {
+  "id": "rule-out",
+  "phrase": "rule out",
+  "meaning": "exclude as a cause or an option",
+  "example": "Let's rule out the network first.",
+  "pattern": "rul(e|es|ed|ing) out"
+ },
+ {
+  "id": "sanity-check",
+  "phrase": "a sanity check",
+  "meaning": "a quick check that a result is plausible",
+  "example": "I added a sanity check for negative values.",
+  "pattern": "sanity[- ]check"
+ },
+ {
+  "id": "devils-advocate",
+  "phrase": "play devil's advocate",
+  "meaning": "argue the other side to test an idea",
+  "example": "Let me play devil's advocate: why not keep the old way?",
+  "pattern": "devil'?s advocate"
+ },
+ {
+  "id": "low-hanging-fruit",
+  "phrase": "low-hanging fruit",
+  "meaning": "an easy gain to take first",
+  "example": "Removing the duplicate query is the low-hanging fruit.",
+  "pattern": "low[- ]hanging fruit"
+ },
+ {
+  "id": "in-a-nutshell",
+  "phrase": "in a nutshell",
+  "meaning": "in very few words",
+  "example": "In a nutshell, the cache is never invalidated.",
+  "pattern": "in a nutshell"
+ },
+ {
+  "id": "keep-an-eye",
+  "phrase": "keep an eye on",
+  "meaning": "watch something over time",
+  "example": "I'll keep an eye on the memory usage.",
+  "pattern": "keep(s|ing)? an eye on|kept an eye on"
+ },
+ {
+  "id": "extra-mile",
+  "phrase": "go the extra mile",
+  "meaning": "do more than is required",
+  "example": "They went the extra mile and added docs.",
+  "pattern": "(go|goes|going|went) the extra mile"
+ },
+ {
+  "id": "pros-and-cons",
+  "phrase": "the pros and cons",
+  "meaning": "the advantages and disadvantages",
+  "example": "Let's list the pros and cons of both options.",
+  "pattern": "pros and cons"
+ },
+ {
+  "id": "trade-off",
+  "phrase": "a trade-off",
+  "meaning": "giving up one thing to gain another",
+  "example": "It's a trade-off between speed and memory.",
+  "pattern": "trade[- ]?offs?"
+ },
+ {
+  "id": "worst-case",
+  "phrase": "the worst-case scenario",
+  "meaning": "the most unfavourable outcome that could happen",
+  "example": "In the worst-case scenario, we lose one day of data.",
+  "pattern": "worst[- ]case"
+ },
+ {
+  "id": "to-be-fair",
+  "phrase": "to be fair",
+  "meaning": "a fair point in the other direction",
+  "example": "To be fair, the old code was not that bad.",
+  "pattern": "to be fair"
+ },
+ {
+  "id": "for-what-its-worth",
+  "phrase": "for what it's worth",
+  "meaning": "offered as a modest opinion",
+  "example": "For what it's worth, I would keep the current name.",
+  "pattern": "for what it'?s worth"
+ },
+ {
+  "id": "on-the-fence",
+  "phrase": "be on the fence",
+  "meaning": "be undecided",
+  "example": "I'm on the fence about splitting the module.",
+  "pattern": "on the fence"
+ },
+ {
+  "id": "bear-in-mind",
+  "phrase": "bear in mind",
+  "meaning": "remember to take into account",
+  "example": "Bear in mind that the API is rate limited.",
+  "pattern": "bear(s|ing)? in mind"
+ },
+ {
+  "id": "to-some-extent",
+  "phrase": "to some extent",
+  "meaning": "partly",
+  "example": "To some extent, this is a naming problem.",
+  "pattern": "to some extent"
+ },
+ {
+  "id": "up-in-the-air",
+  "phrase": "up in the air",
+  "meaning": "undecided or uncertain",
+  "example": "The release date is still up in the air.",
+  "pattern": "up in the air"
+ },
+ {
+  "id": "iron-out",
+  "phrase": "iron out",
+  "meaning": "fix the remaining small problems or details",
+  "example": "We still have to iron out a few edge cases.",
+  "pattern": "iron(s|ed|ing)? out"
+ },
+ {
+  "id": "from-scratch",
+  "phrase": "from scratch",
+  "meaning": "starting from nothing",
+  "example": "Rewriting it from scratch would take weeks.",
+  "pattern": "from scratch"
+ },
+ {
+  "id": "fall-back-on",
+  "phrase": "fall back on",
+  "meaning": "use as a backup",
+  "example": "If the cache is empty, we fall back on the database.",
+  "pattern": "fall(s|ing)? back (on|to)|fell back (on|to)"
+ },
+ {
+  "id": "hit-the-ground",
+  "phrase": "hit the ground running",
+  "meaning": "start working effectively right away",
+  "example": "With good docs, new people can hit the ground running.",
+  "pattern": "hit(s|ting)? the ground running"
+ },
+ {
+  "id": "moving-target",
+  "phrase": "a moving target",
+  "meaning": "something whose requirements keep changing",
+  "example": "The spec is a moving target.",
+  "pattern": "moving target"
+ },
+ {
+  "id": "tip-of-the-iceberg",
+  "phrase": "the tip of the iceberg",
+  "meaning": "a small visible part of a much bigger problem",
+  "example": "These three bugs are just the tip of the iceberg.",
+  "pattern": "tip of the iceberg"
+ },
+ {
+  "id": "rabbit-hole",
+  "phrase": "go down a rabbit hole",
+  "meaning": "get lost in a long tangent",
+  "example": "I went down a rabbit hole reading the kernel docs.",
+  "pattern": "rabbit hole"
+ },
+ {
+  "id": "in-the-weeds",
+  "phrase": "in the weeds",
+  "meaning": "stuck in too many details",
+  "example": "Let's step back; we're in the weeds.",
+  "pattern": "in the weeds"
+ },
+ {
+  "id": "back-burner",
+  "phrase": "on the back burner",
+  "meaning": "postponed; low priority for now",
+  "example": "The dark mode is on the back burner.",
+  "pattern": "back burner"
+ },
+ {
+  "id": "matter-of-taste",
+  "phrase": "a matter of taste",
+  "meaning": "depends on personal preference",
+  "example": "Tabs or spaces is a matter of taste.",
+  "pattern": "matter of taste"
+ },
+ {
+  "id": "sooner-or-later",
+  "phrase": "sooner or later",
+  "meaning": "at some point, certainly",
+  "example": "Sooner or later, that table will be too big.",
+  "pattern": "sooner or later"
+ },
+ {
+  "id": "apples-and-oranges",
+  "phrase": "apples and oranges",
+  "meaning": "things that cannot be compared",
+  "example": "Comparing both numbers is apples and oranges.",
+  "pattern": "apples and oranges"
+ },
+ {
+  "id": "split-hairs",
+  "phrase": "split hairs",
+  "meaning": "argue about tiny differences",
+  "example": "I don't want to split hairs, but the name is misleading.",
+  "pattern": "split(s|ting)? hairs"
+ },
+ {
+  "id": "draw-the-line",
+  "phrase": "draw the line",
+  "meaning": "set a limit",
+  "example": "We have to draw the line at supporting Python 2.",
+  "pattern": "draw(s|ing)? the line|drew the line"
+ }
+]
