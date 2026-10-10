@@ -7,6 +7,7 @@ pass rate per case. Model output is probabilistic, so a case passes at >= --min 
 
   python3 tests/eval.py                                   # the working-tree script
   python3 tests/eval.py -n 5 --lang Portuguese            # more runs, another native language
+  python3 tests/eval.py --model sonnet                    # the same cases with another model
   python3 tests/eval.py --script new=scripts/english-coach.py --script old=/path/to/old.py
                                                           # compare a candidate against what is installed
 Exit code 1 when any case of any script falls below --min.
@@ -19,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_SCRIPT = HERE.parent / "scripts" / "english-coach.py"
 
 
-def run_once(script, text, lang, seed=()):
+def run_once(script, text, lang, seed=(), context="", model="haiku", no_escalation=False):
     with tempfile.TemporaryDirectory() as tmp:
         cfg, data = Path(tmp) / "cfg", Path(tmp) / "data"
         cfg.mkdir()
@@ -38,31 +39,46 @@ def run_once(script, text, lang, seed=()):
             return subprocess.run([sys.executable, "-I", str(script), *args], input=stdin, text=True, env=env,
                                   capture_output=True, timeout=60).stdout
 
+        escalated = False
         prep = json.loads(step("prepare", stdin=json.dumps({"prompt": text})) or "{}")
         if prep.get("coach"):
-            reply = subprocess.run(["claude", "-p", "--model", "haiku", "--no-session-persistence", "--tools", "",
+            def review(m, suffix=""):
+                return subprocess.run(["claude", "-p", "--model", m, "--no-session-persistence", "--tools", "",
                                     "--disable-slash-commands", "--setting-sources", "project",
-                                    "--system-prompt", prep["system"], prep["user"]],
+                                    "--system-prompt", prep["system"], prep["user"] + suffix],
                                    capture_output=True, text=True, timeout=180, env=env).stdout
-            step("ingest", stdin=json.dumps({"prompt": prep["text"], "mode": prep["mode"], "reply": reply}))
+
+            reply = review(model)
+            payload = {"prompt": prep["text"], "mode": prep["mode"], "reply": reply, "context": context}
+            decision = json.loads(step("check", stdin=json.dumps(payload)) or "{}")
+            if decision.get("escalate") and not no_escalation:
+                escalated = True
+                payload["reply"] = review(decision["model"], decision.get("note", ""))
+            step("ingest", stdin=json.dumps(payload))
         db = data / "log.db"
         if not db.exists():
-            return {"careless": False, "findings": [], "error": "no database (review failed)"}
+            return {"careless": False, "findings": [], "error": "no database (review failed)", "escalated": escalated}
         c = sqlite3.connect(db)
         careless = c.execute("SELECT 1 FROM state WHERE key='last_careless'").fetchone() is not None
-        findings = c.execute("SELECT original, fix, category FROM findings WHERE prompt_id != 0").fetchall()   # 0 = seeded history
-        return {"careless": careless, "findings": findings, "error": None}
+        findings = c.execute("SELECT original, fix, category, severity FROM findings WHERE prompt_id != 0").fetchall()   # 0 = seeded history
+        return {"careless": careless, "findings": findings, "error": None, "escalated": escalated}
 
 
 def check(case, out):
     """List of failed expectations (empty = pass)."""
     if out["error"]:
         return [out["error"]]
-    problems, found = [], out["findings"]
+    problems, rows = [], out["findings"]
+    found = [(o, f, cat) for o, f, cat, sev in rows if sev == "error"]       # style items are not errors
+    styles = [(o, f, cat) for o, f, cat, sev in rows if sev == "style"]
     if out["careless"] != case.get("careless", False):
         problems.append(f"careless={out['careless']} (expected {case.get('careless', False)})")
     if case.get("no_findings") and found:
         problems.append("unexpected tip: " + "; ".join(f"{o} -> {f}" for o, f, _ in found))
+    if case.get("no_style") and styles:
+        problems.append("unexpected style item: " + "; ".join(f"{o} -> {f}" for o, f, _ in styles))
+    if len(styles) > 1:
+        problems.append("more than one style item")
     for want in case.get("flag", []):
         if not any(want.lower() in o.lower() for o, _, _ in found):
             problems.append(f"missed '{want}'")
@@ -78,6 +94,8 @@ def main():
     ap.add_argument("--script", action="append", default=[], help="[label=]path, repeatable")
     ap.add_argument("--lang", default="German", help="native language for the run ('' for none)")
     ap.add_argument("--min", type=float, default=0.75)
+    ap.add_argument("--no-escalation", action="store_true", help="skip the second review of unclear dictated passages")
+    ap.add_argument("--model", default="haiku", help="model alias or id for the review call (default haiku)")
     ap.add_argument("--case", default="", help="only cases whose id contains this")
     ap.add_argument("-j", "--jobs", type=int, default=6)
     args = ap.parse_args()
@@ -90,11 +108,12 @@ def main():
 
     jobs = [(s, c, i) for s in scripts for c in cases for i in range(args.runs)]
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        outs = list(pool.map(lambda j: run_once(j[0][1], j[1]["text"], args.lang, j[1].get("seed", ())), jobs))
+        outs = list(pool.map(lambda j: run_once(j[0][1], j[1]["text"], args.lang, j[1].get("seed", ()), j[1].get("context", ""), args.model, args.no_escalation), jobs))
 
-    results = {}   # (label, case id) -> list of problem lists
+    results, escalations = {}, {}   # (label, case id) -> list of problem lists / number of escalated runs
     for (s, c, _), out in zip(jobs, outs):
         results.setdefault((s[0], c["id"]), []).append(check(c, out))
+        escalations[(s[0], c["id"])] = escalations.get((s[0], c["id"]), 0) + int(bool(out.get("escalated")))
 
     width = max(len(c["id"]) for c in cases)
     print(f"{'case':{width}}  " + "  ".join(f"{label:>8}" for label, _ in scripts))
@@ -107,6 +126,9 @@ def main():
             failed |= rate < args.min and not c.get("informational")
             cells.append(f"{rate:>7.0%}{('~' if c.get('informational') else '*') if rate < args.min else ' '}")
         print(f"{c['id']:{width}}  " + "  ".join(cells))
+    escalated = [(k, n) for k, n in escalations.items() if n]
+    if escalated:
+        print("\nsecond review (escalation) triggered: " + ", ".join(f"{k[1]} {n}/{args.runs}" for k, n in escalated))
     print(f"\n(* below {args.min:.0%}, fails the run; ~ informational, not gating; {args.runs} runs per case)")
     for label, _ in scripts:
         for c in cases:

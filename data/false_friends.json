@@ -1,0 +1,18 @@
+{
+  "german": [
+    {"word": "become", "looks_like": "bekommen", "means": "get, receive"},
+    {"word": "actual", "looks_like": "aktuell", "means": "current"},
+    {"word": "eventually", "looks_like": "eventuell", "means": "possibly, perhaps"},
+    {"word": "sensible", "looks_like": "sensibel", "means": "sensitive"},
+    {"word": "chef", "looks_like": "Chef", "means": "boss"},
+    {"word": "gift", "looks_like": "Gift", "means": "poison"},
+    {"word": "control", "looks_like": "kontrollieren", "means": "check, inspect"},
+    {"word": "realize", "looks_like": "realisieren", "means": "implement, carry out"},
+    {"word": "handy", "looks_like": "Handy", "means": "mobile phone"},
+    {"word": "sympathetic", "looks_like": "sympathisch", "means": "likeable"},
+    {"word": "consequent", "looks_like": "konsequent", "means": "consistent"},
+    {"word": "concurrence", "looks_like": "Konkurrenz", "means": "competition"},
+    {"word": "also", "looks_like": "also", "means": "so, therefore"},
+    {"word": "in that case", "looks_like": "in diesem Fall", "means": "in the instance mentioned earlier (English: in the case where, in that instance)"}
+  ]
+}

@@ -5,6 +5,7 @@ import type { Fix, Review } from '../types'
 
 const MODEL = 'haiku'
 const KEEP = 50
+const CONTEXT_CHARS = 8_000 // how much of the assistant's recent text the quote guard may compare against
 const OWN_WORDS = new Set(['composer', 'bridge'])
 
 const reviews = atom({ plugin: 'english-coach', key: 'reviews' } as const, {} as Record<string, Review>)
@@ -24,6 +25,29 @@ const script = ($: EngineInterface, args: string[], payload: unknown) =>
     timeoutMs: 15_000,
   })
 
+// What the assistant said last, for the quote guard: a phrase the user repeats from it is a quotation, not their writing.
+// Read when the prompt is submitted, handed to the script for one call, never stored.
+const recentAssistantText = async ($: EngineInterface): Promise<string> => {
+  try {
+    const messages = await $.session.messages({ as: 'api' })
+    const texts: string[] = []
+    for (let index = messages.length - 1; index >= 0 && texts.length < 2; index--) {
+      const message = messages[index]
+      if (message === undefined || message.role !== 'assistant') continue
+      const content = message.content
+      const text =
+        typeof content === 'string'
+          ? content
+          : content.map(block => ('text' in block && typeof block.text === 'string' ? block.text : '')).join('\n')
+      if (text.trim() !== '') texts.push(text)
+    }
+
+    return texts.reverse().join('\n').slice(-CONTEXT_CHARS)
+  } catch {
+    return ''
+  }
+}
+
 type Prepared = {
   coach: boolean
   text: string
@@ -42,7 +66,7 @@ const prepare = async ($: EngineInterface, text: string): Promise<Prepared> => {
 }
 
 // `shown` is the text as the message row will draw it, which is the key the fixes are looked up by.
-const review = async ($: EngineInterface, prepared: Prepared, shown: string) => {
+const review = async ($: EngineInterface, prepared: Prepared, shown: string, context: string) => {
   try {
     const reply = await $.model.complete({
       model: MODEL,
@@ -53,8 +77,28 @@ const review = async ($: EngineInterface, prepared: Prepared, shown: string) => 
     })
     if (!reply.isAnswered) return
 
+    // A dictated passage the first review found garbled is probably a transcription error: ask the larger model once.
+    let answer = reply.text
+    try {
+      const decision = JSON.parse(
+        (await script($, ['check'], { prompt: prepared.text, mode: prepared.mode, reply: reply.text, context })).stdout,
+      )
+      if (decision.escalate && decision.model) {
+        const second = await $.model.complete({
+          model: decision.model,
+          system: prepared.system,
+          prompt: (prepared.user ?? '') + (decision.note ?? ''),
+          maxTokens: 700,
+          timeoutMs: 45_000,
+        })
+        if (second.isAnswered) answer = second.text
+      }
+    } catch {
+      // Without the second opinion the first review stands.
+    }
+
     const result = JSON.parse(
-      (await script($, ['ingest'], { prompt: prepared.text, mode: prepared.mode, reply: reply.text })).stdout,
+      (await script($, ['ingest'], { prompt: prepared.text, mode: prepared.mode, reply: answer, context })).stdout,
     )
     if (!result.ok) return
     if (result.hint) $.ui.toast(result.hint)
@@ -80,13 +124,14 @@ export const register: Register = on => {
     if (!isInteractive || !OWN_WORDS.has(e.origin?.kind ?? 'composer')) return next(e)
 
     const prepared = await prepare($, e.text)
+    const context = prepared.coach ? await recentAssistantText($) : ''
     const isStripped = prepared.strip && prepared.text !== e.text.trim()
     const entered = await next(isStripped ? { ...e, text: prepared.text } : e)
     if (entered.drop !== undefined) return entered
 
     if (prepared.coach) {
       const shown = isStripped ? prepared.text : e.text.trim()
-      $.clock.after(0, () => void review($, prepared, shown))
+      $.clock.after(0, () => void review($, prepared, shown, context))
     }
 
     return entered
@@ -108,21 +153,34 @@ export const register: Register = on => {
             <Box key={`fix-${index}`} flexDirection="column">
               <Text wrap="wrap">
                 <Text dimColor>{mark}</Text>
-                <Text color="error">{fix.original}</Text>
-                <Text dimColor>{' → '}</Text>
-                <Text color="success" bold>
-                  {fix.fix}
-                </Text>
-                <Text dimColor>{`  ${fix.category}${fix.transfer ? ' · transfer' : ''}`}</Text>
+                {fix.severity === 'style' ? (
+                  <Text dimColor>{`${fix.original} → ${fix.fix}  style, not an error`}</Text>
+                ) : (
+                  <Text color="error">{fix.original}</Text>
+                )}
+                {fix.severity === 'style' ? null : <Text dimColor>{' → '}</Text>}
+                {fix.severity === 'style' ? null : (
+                  <Text color="success" bold>
+                    {fix.fix}
+                  </Text>
+                )}
+                {fix.severity === 'style' ? null : (
+                  <Text dimColor>{`  ${fix.category}${fix.transfer ? ' · transfer' : ''}`}</Text>
+                )}
               </Text>
               <Text dimColor italic wrap="wrap">
                 {`  ${fix.explanation}`}
               </Text>
+              {fix.reminder ? (
+                <Text dimColor wrap="wrap">
+                  {`  ↻ ${fix.reminder}`}
+                </Text>
+              ) : null}
             </Box>
           ))}
           {held.btw === null ? null : (
             <Text dimColor wrap="wrap">
-              {`✎ ${held.btw}`}
+              {`${held.icon} ${held.btw}`}
             </Text>
           )}
         </Box>

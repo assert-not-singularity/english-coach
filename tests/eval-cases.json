@@ -31,7 +31,7 @@
   },
   {
     "id": "minimal-fix-keeps-dropped-subject",
-    "text": "Ah, lol. It makes sense. Makes absolutely sense.",
+    "text": "Right, that explains the timeout. Makes absolutely sense.",
     "fix_lacks": [
       "that makes",
       "it makes"
@@ -44,7 +44,7 @@
   },
   {
     "id": "statement-question",
-    "text": "The repo you mentioned also had some visual statistics...?",
+    "text": "The service you mentioned also had some retry settings...?",
     "no_findings": true
   },
   {
@@ -56,7 +56,8 @@
   {
     "id": "politeness-is-taste",
     "text": "I'm wondering if you can also summarize the open issues in the tracker.",
-    "no_findings": true
+    "no_findings": true,
+    "no_style": true
   },
   {
     "id": "jargon-and-code",
@@ -101,7 +102,7 @@
   },
   {
     "id": "recall-adverb-for-adjective",
-    "text": "Ah, lol. It makes sense. Makes absolutely sense.",
+    "text": "Right, that explains the timeout. Makes absolutely sense.",
     "flag": [
       "absolutely sense"
     ],
@@ -145,6 +146,192 @@
   {
     "id": "speech-marker-mid-text",
     "text": "Can you check weather [dictated] the tests are passing on the main branch? [dictated] I mean no [dictated] now [dictated]",
+    "no_findings": true
+  },
+  {
+    "id": "rare-but-valid-word",
+    "text": "If a test fails at least twice, thrice, who knows, we should open an issue for it.",
+    "no_findings": true,
+    "no_style": true
+  },
+  {
+    "id": "speech-rare-but-valid-word",
+    "text": "If a test fails at least twice, thrice, who knows, we should open an issue for it. [dictated]",
+    "no_findings": true,
+    "no_style": true
+  },
+  {
+    "id": "formal-word-is-not-an-error",
+    "text": "Whilst the first run passed, the second one hangs on the staging cluster, so let's look at the logs.",
+    "no_findings": true,
+    "no_style": true
+  },
+  {
+    "id": "speech-wording-is-taste",
+    "text": "I wonder whether it matters if I am just speaking it or typing it. [dictated]",
+    "no_findings": true,
+    "informational": true
+  },
+  {
+    "id": "quotes-the-assistant-dictated",
+    "text": "What is retry budget is fixed, and why was it flagged? [dictated]",
+    "context": "The case retry-budget-is-fixed checks that a dictated sentence gets no tip for a mere wording preference.",
+    "no_findings": true
+  },
+  {
+    "id": "quotes-the-assistant-typed",
+    "text": "I don't understand the phrase checks that a dictated sentence gets no tip, can you rephrase it?",
+    "context": "The case checks that a dictated sentence gets no tip for a mere wording preference.",
+    "no_findings": true
+  },
+  {
+    "id": "style-item-is-not-an-error",
+    "text": "I start to like the whole thing here, and it rather makes sense to keep it.",
+    "no_findings": true,
+    "informational": true
+  },
+  {
+    "id": "grammatical-under-another-meaning",
+    "text": "These two fixes should be the same PR, because the second one only makes sense with the first.",
+    "no_findings": true
+  },
+  {
+    "id": "speech-grammatical-under-another-meaning",
+    "text": "I think these two fixes should be the same PR, because they depend on each other. [dictated]",
+    "no_findings": true
+  },
+  {
+    "id": "speech-spoken-construction",
+    "text": "I treated the three files as the module, so that the module is made of them and not that they are inside it. [dictated]",
+    "no_findings": true,
+    "informational": true
+  },
+  {
+    "id": "speech-phrase-mishearing",
+    "text": "I think the new setup is to define for the nightly check, because all the runs pass. [dictated]",
+    "no_findings": true
+  },
+  {
+    "id": "in-that-case-where",
+    "text": "I mean in that case where this test failed, the log was empty, so I could not see why.",
+    "flag": [
+      "in that case"
+    ],
+    "fix_lacks": [
+      "if this",
+      "if the",
+      "if it"
+    ]
+  },
+  {
+    "id": "speech-in-that-case-where",
+    "text": "I mean in that case where this test failed, the log was empty, so I could not see why. [dictated]",
+    "flag": [
+      "in that case"
+    ],
+    "fix_lacks": [
+      "if this",
+      "if the",
+      "if it"
+    ]
+  },
+  {
+    "id": "ff-become",
+    "text": "I think I will become a new laptop next week, because mine is too slow.",
+    "flag": [
+      "become"
+    ],
+    "informational": true
+  },
+  {
+    "id": "ff-actual",
+    "text": "The actual status of the server is unknown to me, so let me check.",
+    "flag": [
+      "actual"
+    ],
+    "informational": true
+  },
+  {
+    "id": "ff-eventually",
+    "text": "Eventually we could skip the migration, but I am not sure about that.",
+    "flag": [
+      "eventually"
+    ],
+    "informational": true
+  },
+  {
+    "id": "ff-sensible",
+    "text": "The new design is very sensible, it breaks as soon as I touch it.",
+    "flag": [
+      "sensible"
+    ],
+    "informational": true
+  },
+  {
+    "id": "ff-chef",
+    "text": "My chef reviewed the pull request yesterday and approved it.",
+    "flag": [
+      "chef"
+    ],
+    "informational": true
+  },
+  {
+    "id": "ff-gift",
+    "text": "Be careful with this script, it is a gift for the whole database.",
+    "flag": [
+      "gift"
+    ],
+    "informational": true
+  },
+  {
+    "id": "ff-control",
+    "text": "Please control the logs again, I think something went wrong there.",
+    "flag": [
+      "control"
+    ],
+    "informational": true
+  },
+  {
+    "id": "ff-realize",
+    "text": "We need to realize the feature until Friday, otherwise we miss the release.",
+    "flag": [
+      "realize"
+    ],
+    "informational": true
+  },
+  {
+    "id": "ff-correct-sensible",
+    "text": "We should be sensible here and keep the change small, so the review stays quick.",
+    "no_findings": true
+  },
+  {
+    "id": "ff-correct-eventually",
+    "text": "Eventually the build finished, after almost twenty minutes of waiting.",
+    "no_findings": true
+  },
+  {
+    "id": "ff-correct-actual",
+    "text": "Is the actual bug fixed now, or only the symptom that the test showed?",
+    "no_findings": true
+  },
+  {
+    "id": "ff-correct-chef-gift",
+    "text": "The chef at the new place makes great pasta, and the gift card is still valid.",
+    "no_findings": true
+  },
+  {
+    "id": "telegraphic-bug-report",
+    "text": "See here. This happens really often on the dashboard now. Also the buttons not clickable or cursor not changing when moving over a menu but only after a delay.",
+    "no_findings": true
+  },
+  {
+    "id": "telegraphic-notes",
+    "text": "Quick summary: tests failing again on main, build slow since yesterday, one flaky job on the staging cluster.",
+    "no_findings": true
+  },
+  {
+    "id": "speech-telegraphic-bug-report",
+    "text": "See here. This happens really often on the dashboard now. Also the buttons not clickable or cursor not changing when moving over a menu but only after a delay. [dictated]",
     "no_findings": true
   }
 ]

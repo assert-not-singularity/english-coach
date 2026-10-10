@@ -16,6 +16,7 @@ const INGESTED = JSON.stringify({
       original: 'explain me',
       fix: 'explain to me',
       explanation: "'Explain' takes 'to' before the person.",
+      severity: 'error',
     },
   ],
 })
@@ -29,22 +30,28 @@ const MARKER = ' [dictated]'
 // answers once, the engine accepts the prompt and draws a bare row. `seen` records what the mod handed on.
 const world = (on: On, ingested: string) => {
   const clock = mock.clock(on)
-  const seen = { entered: '', ingestMode: '' }
+  const seen = { entered: '', ingestMode: '', ingestContext: '', ingestReply: '', models: [] as string[], prompts: [] as string[], escalate: false }
 
   on('process.run', async (_$, e) => {
     const sent = JSON.parse(e.init?.stdin ?? '{}')
     const isSpeech = typeof sent.prompt === 'string' && sent.prompt.endsWith(MARKER)
     const text = isSpeech ? sent.prompt.slice(0, -MARKER.length) : sent.prompt
-    if (e.argv.includes('ingest')) seen.ingestMode = sent.mode
+    if (e.argv.includes('ingest')) {
+      seen.ingestMode = sent.mode
+      seen.ingestContext = sent.context
+      seen.ingestReply = sent.reply
+    }
 
     return {
       value: {
         exitCode: 0,
         stdout: e.argv.includes('prepare')
           ? JSON.stringify({ coach: true, text, mode: isSpeech ? 'dictated' : 'written', strip: isSpeech, system: 'system', user: 'user' })
-          : e.argv.includes('ingest')
-            ? JSON.stringify({ ...JSON.parse(ingested), icon: sent.mode === 'dictated' ? '\u{1F399}\uFE0E' : '\u270E' })
-            : '',
+          : e.argv.includes('check')
+            ? JSON.stringify({ escalate: seen.escalate, model: 'sonnet', note: ' NOTE-ABOUT-MISHEARING' })
+            : e.argv.includes('ingest')
+              ? JSON.stringify({ ...JSON.parse(ingested), icon: sent.mode === 'dictated' ? '\u{1F399}\uFE0E' : '\u270E' })
+              : '',
         stderr: '',
         isStdoutTruncated: false,
         isStderrTruncated: false,
@@ -56,7 +63,18 @@ const world = (on: On, ingested: string) => {
 
     return { text: e.text, origin: e.origin }
   })
-  on('model.complete', async () => ({ value: { isAnswered: true as const, text: '{"fixes":[]}', usage: USAGE } }))
+  on('session.messages', async () => ({
+    value: [
+      { role: 'user' as const, content: 'earlier question' },
+      { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'The case speech-wording-is-taste checks dictated wording.' }] },
+    ],
+  }) as never)
+  on('model.complete', async (_$, e) => {
+    seen.models.push(e.model)
+    seen.prompts.push(e.prompt)
+
+    return { value: { isAnswered: true as const, text: `{"fixes":[],"model":"${e.model}"}`, usage: USAGE } }
+  })
   on('ui.render', { component: 'UserMessage' }, async ($, e) => {
     const { Text } = $.ui.resolve(e)
 
@@ -167,5 +185,62 @@ describe('inline fixes', () => {
     expect(await written!.find({ text: /\u270E/ })).toBeDefined()
     expect(await written!.find({ text: /\u{1F399}/u })).toBeUndefined()
     await written!.unmount()
+  })
+
+  test('the assistant\'s recent text goes to the review as context, for the quote guard', async ($, on) => {
+    const { clock, seen } = world(on, INGESTED)
+    await submit($, PROMPT)
+
+    const ui = await drawnWith($, clock, PROMPT, /explain to me/)
+    expect(ui).toBeDefined()
+    await ui!.unmount()
+    expect(seen.ingestContext).toContain('speech-wording-is-taste')
+  })
+
+  test('a style item is drawn quietly and labelled as not an error', async ($, on) => {
+    const styled = JSON.stringify({
+      ok: true, careless: false, btw: null, hint: null,
+      fixes: [{ category: 'phrasing', transfer: false, original: 'it rather makes sense', fix: 'it makes more sense', explanation: 'More natural.', severity: 'style' }],
+    })
+    const { clock } = world(on, styled)
+    await submit($, PROMPT)
+
+    const ui = await drawnWith($, clock, PROMPT, /not an error/)
+    expect(ui).toBeDefined()
+    await ui!.unmount()
+  })
+
+  test('a mistake that keeps coming back carries a reminder line', async ($, on) => {
+    const recurring = JSON.stringify({
+      ok: true, careless: false, btw: null, hint: null,
+      fixes: [{ category: 'word-choice', transfer: false, original: 'defer this', fix: 'derive this', explanation: 'derive = get from.', severity: 'error', reminder: 'This one keeps coming back: "derive" instead of "defer".' }],
+    })
+    const { clock } = world(on, recurring)
+    await submit($, PROMPT)
+
+    const ui = await drawnWith($, clock, PROMPT, /keeps coming back/)
+    expect(ui).toBeDefined()
+    await ui!.unmount()
+  })
+
+  test('one review by default, and a second by the larger model only when the check asks for it', async ($, on) => {
+    const { clock, seen } = world(on, INGESTED)
+    await submit($, PROMPT)
+    expect(await drawnWith($, clock, PROMPT, /explain to me/)).toBeDefined()
+    expect(seen.models).toEqual(['haiku'])
+  })
+
+  test('an unclear dictated passage gets a second review and its answer is the one stored', async ($, on) => {
+    const { clock, seen } = world(on, INGESTED)
+    seen.escalate = true
+    await submit($, PROMPT + MARKER)
+
+    const ui = await drawnWith($, clock, PROMPT, /explain to me/)
+    expect(ui).toBeDefined()
+    await ui!.unmount()
+    expect(seen.models).toEqual(['haiku', 'sonnet'])
+    expect(seen.ingestReply).toContain('"model":"sonnet"')
+    expect(seen.prompts[1]).toContain('NOTE-ABOUT-MISHEARING')
+    expect(seen.prompts[0]).not.toContain('NOTE-ABOUT-MISHEARING')
   })
 })

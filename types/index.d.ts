@@ -4,6 +4,8 @@ export type Fix = {
   original: string
   fix: string
   explanation: string
+  severity: 'error' | 'style'
+  reminder?: string | null
 }
 
 export type Review = {
